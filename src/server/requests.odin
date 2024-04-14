@@ -531,17 +531,28 @@ read_ols_initialize_options :: proc(
 					context.temp_allocator,
 				)
 			}
-
-			final_path = strings.clone(final_path)
 		} else {
 			if filepath.is_abs(it.path) {
-				final_path = strings.clone(forward_path)
+				final_path = forward_path
 			} else {
-				final_path = path.join(elems = {uri.path, forward_path})
+				final_path = path.join(
+					elems = {uri.path, forward_path},
+					allocator = context.temp_allocator,
+				)
 			}
 		}
 
-		config.collections[strings.clone(it.name)] = final_path
+		absolute_path, ok := filepath.abs(final_path, context.allocator)
+
+		if !ok {
+			log.errorf(
+				"Failed to find absolute adresss of collection: %v",
+				final_path,
+			)
+			return
+		}
+
+		config.collections[strings.clone(it.name)] = absolute_path
 	}
 
 	// ensure that core/vendor collections are provided
@@ -549,6 +560,9 @@ read_ols_initialize_options :: proc(
 
 	if odin_core_env == "" {
 		if exe_path, ok := common.lookup_in_path("odin"); ok {
+			// ensure that the correct lookup path is found even if symlinked
+			exe_path, ok = filepath.abs(exe_path, context.temp_allocator)
+			if !ok do return
 			odin_core_env = filepath.dir(exe_path, context.temp_allocator)
 		}
 	}
@@ -663,13 +677,13 @@ request_initialize :: proc(
 				   nil {
 					read_ols_initialize_options(config, ols_config, uri)
 				} else {
-					log.errorf("Failed to unmarshal %v", file)
+					log.warnf("Failed to unmarshal %v", file)
 				}
 			} else {
-				log.errorf("Failed to parse json %v", file)
+				log.warnf("Failed to parse json %v", file)
 			}
 		} else {
-			log.errorf("Failed to read/find %v", file)
+			log.warnf("Failed to read/find %v", file)
 		}
 	}
 
