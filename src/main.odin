@@ -1,5 +1,7 @@
 package main
 
+import "base:intrinsics"
+
 import "core:encoding/json"
 import "core:fmt"
 import "core:log"
@@ -11,8 +13,6 @@ import "core:strconv"
 import "core:strings"
 import "core:sync"
 import "core:thread"
-
-import "core:intrinsics"
 
 import "src:common"
 import "src:server"
@@ -34,6 +34,7 @@ os_write :: proc(handle: rawptr, data: []byte) -> (int, int) {
 request_thread: ^thread.Thread
 
 logger: ^log.Logger
+
 
 run :: proc(reader: ^server.Reader, writer: ^server.Writer) {
 	common.config.collections = make(map[string]string)
@@ -66,7 +67,8 @@ run :: proc(reader: ^server.Reader, writer: ^server.Writer) {
 
 	for common.config.running {
 		if common.config.verbose {
-			logger^ = server.create_lsp_logger(writer, log.Level.Info)
+			//Currently letting verbose use error, since some ast prints causes crashes - most likely a bug in core:fmt.
+			logger^ = server.create_lsp_logger(writer, log.Level.Error)
 		} else {
 			logger^ = server.create_lsp_logger(writer, log.Level.Error)
 		}
