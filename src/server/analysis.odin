@@ -86,6 +86,7 @@ AstContext :: struct {
 	imports:          []Package, //imports for the current document
 	current_package:  string,
 	document_package: string,
+	saved_package:    string,
 	use_locals:       bool,
 	local_id:         int,
 	call:             ^ast.Call_Expr, //used to determine the types for generics and the correct function for overloaded functions
@@ -128,6 +129,46 @@ make_ast_context :: proc(
 	return ast_context
 }
 
+set_ast_package_deferred :: proc(ast_context: ^AstContext, pkg: string) {
+	ast_context.current_package = ast_context.saved_package
+}
+
+@(deferred_in = set_ast_package_deferred)
+set_ast_package_set_scoped :: proc(ast_context: ^AstContext, pkg: string) {
+	ast_context.saved_package = ast_context.current_package
+	ast_context.current_package = pkg
+}
+
+set_ast_package_none_deferred :: proc(ast_context: ^AstContext) {
+	ast_context.current_package = ast_context.saved_package
+}
+
+@(deferred_in = set_ast_package_none_deferred)
+set_ast_package_scoped :: proc(ast_context: ^AstContext) {
+	ast_context.saved_package = ast_context.current_package
+}
+
+set_ast_package_from_symbol_deferred :: proc(
+	ast_context: ^AstContext,
+	symbol: Symbol,
+) {
+	ast_context.current_package = ast_context.saved_package
+}
+
+@(deferred_in = set_ast_package_from_symbol_deferred)
+set_ast_package_from_symbol_scoped :: proc(
+	ast_context: ^AstContext,
+	symbol: Symbol,
+) {
+	ast_context.saved_package = ast_context.current_package
+
+	if symbol.pkg != "" {
+		ast_context.current_package = symbol.pkg
+	} else {
+		ast_context.current_package = ast_context.document_package
+	}
+}
+
 reset_ast_context :: proc(ast_context: ^AstContext) {
 	ast_context.use_locals = true
 	clear(&ast_context.recursion_map)
@@ -154,10 +195,7 @@ resolve_type_comp_literal :: proc(
 	}
 
 
-	prev_package := ast_context.current_package
-	ast_context.current_package = current_symbol.pkg
-
-	defer ast_context.current_package = prev_package
+	set_ast_package_set_scoped(ast_context, current_symbol.pkg)
 
 	for elem, element_index in current_comp_lit.elems {
 		if !position_in_node(elem, position_context.position) {
@@ -737,7 +775,7 @@ resolve_basic_directive :: proc(
 			ast_context.allocator,
 		)
 		ident.name = "Source_Code_Location"
-		ast_context.current_package = ast_context.document_package
+		set_ast_package_set_scoped(ast_context, ast_context.document_package)
 		return internal_resolve_type_identifier(ast_context, ident^)
 	}
 
@@ -781,11 +819,7 @@ internal_resolve_type_expression :: proc(
 		return {}, false
 	}
 
-	saved_package := ast_context.current_package
-
-	defer {
-		ast_context.current_package = saved_package
-	}
+	set_ast_package_scoped(ast_context)
 
 	if check_node_recursion(ast_context, node) {
 		return {}, false
@@ -979,7 +1013,7 @@ internal_resolve_type_expression :: proc(
 			return {}, false
 		}
 
-		ast_context.current_package = indexed.pkg
+		set_ast_package_set_scoped(ast_context, indexed.pkg)
 
 		symbol: Symbol
 
@@ -1027,11 +1061,7 @@ internal_resolve_type_expression :: proc(
 		); ok {
 			ast_context.use_locals = false
 
-			if selector.pkg != "" {
-				ast_context.current_package = selector.pkg
-			} else {
-				ast_context.current_package = ast_context.document_package
-			}
+			set_ast_package_from_symbol_scoped(ast_context, selector)
 
 			#partial switch s in selector.value {
 			case SymbolProcedureValue:
@@ -1052,11 +1082,7 @@ internal_resolve_type_expression :: proc(
 		); ok {
 			ast_context.use_locals = false
 
-			if selector.pkg != "" {
-				ast_context.current_package = selector.pkg
-			} else {
-				ast_context.current_package = ast_context.document_package
-			}
+			set_ast_package_from_symbol_scoped(ast_context, selector)
 
 			#partial switch s in selector.value {
 			case SymbolFixedArrayValue:
@@ -1079,12 +1105,8 @@ internal_resolve_type_expression :: proc(
 				}
 
 				if components_count == 1 {
-					if selector.pkg != "" {
-						ast_context.current_package = selector.pkg
-					} else {
-						ast_context.current_package =
-							ast_context.document_package
-					}
+					set_ast_package_from_symbol_scoped(ast_context, selector)
+
 					symbol, ok := internal_resolve_type_expression(
 						ast_context,
 						s.expr,
@@ -1219,31 +1241,22 @@ clear_local_group :: proc(ast_context: ^AstContext, id: int) {
 }
 
 get_local :: proc(
-	ast_context: ^AstContext,
-	offset: int,
-	name: string,
+	ast_context: AstContext,
+	ident: ast.Ident,
 ) -> (
 	DocumentLocal,
 	bool,
 ) {
-	for _, locals in &ast_context.locals {
-		if local_stack, ok := locals[name]; ok {
-			for i := len(local_stack) - 1; i >= 0; i -= 1 {
-				if local_stack[i].offset <= offset ||
-				   local_stack[i].local_global {
-					if i < 0 {
-						return {}, false
-					} else {
-						ret := local_stack[i].rhs
-						if ident, ok := ret.derived.(^ast.Ident);
-						   ok && ident.name == name {
-							if i - 1 < 0 {
-								return {}, false
-							}
-						}
-						return local_stack[i], true
-					}
-				}
+	for _, locals in ast_context.locals {
+		local_stack := locals[ident.name] or_continue
+
+		#reverse for local in local_stack {
+			if local.offset <= ident.pos.offset ||
+			   local.local_global ||
+			   local.lhs.pos.offset == ident.pos.offset {
+				// checking equal offsets is a hack to allow matching lhs ident in var decls
+				// because otherwise minimal offset begins after the decl
+				return local, true
 			}
 		}
 	}
@@ -1297,41 +1310,37 @@ internal_resolve_type_identifier :: proc(
 		return {}, false
 	}
 
-	saved_package := ast_context.current_package
-
-	defer {
-		ast_context.current_package = saved_package
-	}
+	set_ast_package_scoped(ast_context)
 
 	if v, ok := common.keyword_map[node.name]; ok {
 		//keywords
 		ident := new_type(Ident, node.pos, node.end, ast_context.allocator)
 		ident.name = node.name
 
-		symbol: Symbol
-
 		switch ident.name {
+		case "nil":
+			return {}, false
 		case "true", "false":
-			symbol = Symbol {
-				type = .Keyword,
-				signature = node.name,
-				pkg = ast_context.current_package,
-				value = SymbolUntypedValue{type = .Bool},
-			}
+			return {
+					type = .Keyword,
+					signature = node.name,
+					pkg = ast_context.current_package,
+					value = SymbolUntypedValue{type = .Bool},
+				},
+				true
 		case:
-			symbol = Symbol {
-				type = .Keyword,
-				signature = node.name,
-				name = ident.name,
-				pkg = ast_context.current_package,
-				value = SymbolBasicValue{ident = ident},
-			}
+			return {
+					type = .Keyword,
+					signature = node.name,
+					name = ident.name,
+					pkg = ast_context.current_package,
+					value = SymbolBasicValue{ident = ident},
+				},
+				true
 		}
-
-		return symbol, true
 	}
 
-	if local, ok := get_local(ast_context, node.pos.offset, node.name);
+	if local, ok := get_local(ast_context^, node);
 	   ok && ast_context.use_locals {
 		is_distinct := false
 
@@ -1688,7 +1697,7 @@ expand_struct_usings :: proc(
 	ranges := slice.to_dynamic(value.ranges, ast_context.allocator)
 
 	for k, v in value.usings {
-		ast_context.current_package = symbol.pkg
+		set_ast_package_set_scoped(ast_context, symbol.pkg)
 
 		field_expr: ^ast.Expr
 
@@ -1818,8 +1827,7 @@ resolve_comp_literal :: proc(
 		}
 	}
 
-	old_package := ast_context.current_package
-	ast_context.current_package = symbol.pkg
+	set_ast_package_set_scoped(ast_context, symbol.pkg)
 
 	symbol, _ = resolve_type_comp_literal(
 		ast_context,
@@ -1827,8 +1835,6 @@ resolve_comp_literal :: proc(
 		symbol,
 		position_context.parent_comp_lit,
 	) or_return
-
-	ast_context.current_package = old_package
 
 	return symbol, true
 }
@@ -1860,9 +1866,9 @@ resolve_implicit_selector :: proc(
 						proc_value.arg_types[parameter_index].type,
 					)
 				} else if enum_value, ok := symbol.value.(SymbolEnumValue);
-				ok {
-				 return symbol, true
-			 }
+				   ok {
+					return symbol, true
+				}
 			}
 		}
 	}
@@ -1973,7 +1979,7 @@ resolve_implicit_selector :: proc(
 				position_context.parent_comp_lit,
 			); ok {
 				if s, ok := comp_symbol.value.(SymbolStructValue); ok {
-					ast_context.current_package = comp_symbol.pkg
+					set_ast_package_set_scoped(ast_context, comp_symbol.pkg)
 
 					//We can either have the final 
 					elem_index := -1
@@ -2002,7 +2008,7 @@ resolve_implicit_selector :: proc(
 					return resolve_type_expression(ast_context, type)
 				} else if s, ok := comp_symbol.value.(SymbolBitFieldValue);
 				   ok {
-					ast_context.current_package = comp_symbol.pkg
+					set_ast_package_set_scoped(ast_context, comp_symbol.pkg)
 
 					//We can either have the final 
 					elem_index := -1
@@ -2149,7 +2155,8 @@ resolve_unresolved_symbol :: proc(
 	case SymbolBitSetValue:
 		symbol.type = .Enum
 	case SymbolGenericValue:
-		ast_context.current_package = symbol.pkg
+		set_ast_package_set_scoped(ast_context, symbol.pkg)
+
 		if ret, ok := resolve_type_expression(ast_context, v.expr); ok {
 			symbol.type = ret.type
 			symbol.signature = ret.signature
@@ -2172,7 +2179,7 @@ resolve_location_identifier :: proc(
 ) {
 	symbol: Symbol
 
-	if local, ok := get_local(ast_context, node.pos.offset, node.name); ok {
+	if local, ok := get_local(ast_context^, node); ok {
 		symbol.range = common.get_token_range(local.lhs, ast_context.file.src)
 		uri := common.create_uri(local.lhs.pos.file, ast_context.allocator)
 		symbol.pkg = ast_context.document_package
@@ -2212,7 +2219,7 @@ resolve_location_comp_lit_field :: proc(
 ) {
 	reset_ast_context(ast_context)
 
-	ast_context.current_package = ast_context.document_package
+	set_ast_package_set_scoped(ast_context, ast_context.document_package)
 
 	symbol = resolve_comp_literal(ast_context, position_context) or_return
 
@@ -2245,7 +2252,7 @@ resolve_location_implicit_selector :: proc(
 ) {
 	reset_ast_context(ast_context)
 
-	ast_context.current_package = ast_context.document_package
+	set_ast_package_set_scoped(ast_context, ast_context.document_package)
 
 	symbol = resolve_implicit_selector(
 		ast_context,
@@ -2273,7 +2280,8 @@ resolve_location_selector :: proc(
 	ok: bool,
 ) {
 	reset_ast_context(ast_context)
-	ast_context.current_package = ast_context.document_package
+
+	set_ast_package_set_scoped(ast_context, ast_context.document_package)
 
 	symbol = resolve_type_expression(ast_context, selector.expr) or_return
 
@@ -2661,7 +2669,7 @@ make_symbol_array_from_ast :: proc(
 ) -> Symbol {
 	symbol := Symbol {
 		range = common.get_token_range(v.node, ast_context.file.src),
-		type  = .Constant,
+		type  = .Type,
 		pkg   = get_package_from_node(v.node),
 		name  = name.name,
 	}
@@ -2687,7 +2695,7 @@ make_symbol_dynamic_array_from_ast :: proc(
 ) -> Symbol {
 	symbol := Symbol {
 		range = common.get_token_range(v.node, ast_context.file.src),
-		type  = .Constant,
+		type  = .Type,
 		pkg   = get_package_from_node(v.node),
 		name  = name.name,
 	}
@@ -2706,7 +2714,7 @@ make_symbol_matrix_from_ast :: proc(
 ) -> Symbol {
 	symbol := Symbol {
 		range = common.get_token_range(v.node, ast_context.file.src),
-		type  = .Constant,
+		type  = .Type,
 		pkg   = get_package_from_node(v.node),
 		name  = name.name,
 	}
@@ -2728,7 +2736,7 @@ make_symbol_multi_pointer_from_ast :: proc(
 ) -> Symbol {
 	symbol := Symbol {
 		range = common.get_token_range(v.node, ast_context.file.src),
-		type  = .Constant,
+		type  = .Type,
 		pkg   = get_package_from_node(v.node),
 		name  = name.name,
 	}
@@ -2747,7 +2755,7 @@ make_symbol_map_from_ast :: proc(
 ) -> Symbol {
 	symbol := Symbol {
 		range = common.get_token_range(v.node, ast_context.file.src),
-		type  = .Constant,
+		type  = .Type,
 		pkg   = get_package_from_node(v.node),
 		name  = name.name,
 	}
@@ -3040,6 +3048,7 @@ get_generic_assignment :: proc(
 			ast_context.call = old_call
 		}
 
+		//We have to resolve early and can't rely on lazy evalutation because it can have multiple returns.
 		if symbol, ok := resolve_type_expression(ast_context, v.expr); ok {
 			if procedure, ok := symbol.value.(SymbolProcedureValue); ok {
 				for ret in procedure.return_types {
@@ -3174,7 +3183,8 @@ get_locals_stmt :: proc(
 	save_assign := false,
 ) {
 	reset_ast_context(ast_context)
-	ast_context.current_package = ast_context.document_package
+
+	set_ast_package_set_scoped(ast_context, ast_context.document_package)
 
 	using ast
 
@@ -3825,7 +3835,7 @@ resolve_entire_file :: proc(
 
 	get_globals(document.ast, &ast_context)
 
-	ast_context.current_package = ast_context.document_package
+	set_ast_package_set_scoped(&ast_context, ast_context.document_package)
 
 	symbols := make(map[uintptr]SymbolAndNode, 10000, allocator)
 
@@ -4222,6 +4232,7 @@ unwrap_union :: proc(
 	bool,
 ) {
 	if union_symbol, ok := resolve_type_expression(ast_context, node); ok {
+		//TODO: This current package is sus, it probably shouldn't be there.
 		ast_context.current_package = union_symbol.pkg
 		if union_value, ok := union_symbol.value.(SymbolUnionValue); ok {
 			return union_value, true

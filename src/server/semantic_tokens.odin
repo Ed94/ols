@@ -562,25 +562,20 @@ visit_ident :: proc(
 		modifiers += {.ReadOnly}
 	}
 
-	if .Distinct in symbol.flags && symbol.type == .Constant {
-		write_semantic_node(builder, ident, .Type)
-		return
-	}
-
+	/* variable idents */
 	#partial switch symbol.type {
-	case .Variable, .Constant:
+	case .Variable, .Constant, .Function:
 		#partial switch _ in symbol.value {
-		case SymbolProcedureValue:
+		case SymbolProcedureValue, SymbolProcedureGroupValue, SymbolAggregateValue:
 			write_semantic_node(builder, ident, .Function, modifiers)
 		case:
 			write_semantic_node(builder, ident, .Variable, modifiers)
 		}
-	case .Type_Function:
-		write_semantic_node(builder, ident, .Type, modifiers)
 	case .EnumMember:
 		write_semantic_node(builder, ident, .EnumMember, modifiers)
 	}
 
+	/* type idents */
 	switch v in symbol.value {
 	case SymbolPackageValue:
 		write_semantic_node(builder, ident, .Namespace, modifiers)
@@ -588,19 +583,19 @@ visit_ident :: proc(
 		write_semantic_node(builder, ident, .Struct, modifiers)
 	case SymbolEnumValue, SymbolUnionValue:
 		write_semantic_node(builder, ident, .Enum, modifiers)
-	case SymbolProcedureValue, SymbolProcedureGroupValue, SymbolAggregateValue:
-		write_semantic_node(builder, ident, .Function, modifiers)
-	case SymbolMatrixValue,
+	case SymbolProcedureValue,
+	     SymbolMatrixValue,
 	     SymbolBitSetValue,
 	     SymbolDynamicArrayValue,
 	     SymbolFixedArrayValue,
 	     SymbolSliceValue,
 	     SymbolMapValue,
-	     SymbolMultiPointer:
+	     SymbolMultiPointer,
+	     SymbolBasicValue:
 		write_semantic_node(builder, ident, .Type, modifiers)
-	case SymbolBasicValue, SymbolUntypedValue:
-	// handled by static syntax analysis
-	case SymbolGenericValue:
+	case SymbolUntypedValue:
+	// handled by static syntax highlighting
+	case SymbolGenericValue, SymbolProcedureGroupValue, SymbolAggregateValue:
 	// unused
 	case:
 	// log.errorf("Unexpected symbol value: %v", symbol.value);
