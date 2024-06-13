@@ -1457,10 +1457,12 @@ visit_stmt :: proc(
 		}
 
 		if len(v.vals) >= 2 {
-			document = cons(
-				document,
-				cons_with_opl(text(","), visit_expr(p, v.vals[1])),
-			)
+			for val in v.vals[1:] {
+				document = cons(
+					document,
+					cons_with_opl(text(","), visit_expr(p, val)),
+				)
+			}
 		}
 
 		document = cons_with_opl(document, text("in"))
@@ -2946,7 +2948,7 @@ get_node_length :: proc(node: ^ast.Node) -> int {
 			strings.rune_count(v.field.name) \
 		)
 	case:
-		panic(fmt.aprintf("unhandled get_node_length case %v", node.derived))
+		return 0
 	}
 }
 
