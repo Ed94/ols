@@ -14,9 +14,8 @@ import "core:strings"
 import "src:common"
 
 SymbolAndNode :: struct {
-	symbol:      Symbol,
-	node:        ^ast.Node,
-	is_resolved: bool,
+	symbol: Symbol,
+	node:   ^ast.Node,
 }
 
 SymbolStructValue :: struct {
@@ -37,9 +36,12 @@ SymbolBitFieldValue :: struct {
 SymbolPackageValue :: struct {}
 
 SymbolProcedureValue :: struct {
-	return_types: []^ast.Field,
-	arg_types:    []^ast.Field,
-	generic:      bool,
+	return_types:      []^ast.Field,
+	arg_types:         []^ast.Field,
+	orig_return_types: []^ast.Field, //When generics have overloaded the types, we store the original version here.
+	orig_arg_types:    []^ast.Field, //When generics have overloaded the types, we store the original version here.
+	generic:           bool,
+	diverging:         bool,
 }
 
 SymbolProcedureGroupValue :: struct {
@@ -147,6 +149,7 @@ SymbolFlag :: enum {
 	Local,
 	ObjC,
 	ObjCIsClassMethod, // should be set true only when ObjC is enabled
+	Soa,
 }
 
 SymbolFlags :: bit_set[SymbolFlag]
@@ -180,10 +183,7 @@ SymbolType :: enum {
 	Unresolved    = 1, //Use text if not being able to resolve it.
 }
 
-new_clone_symbol :: proc(
-	data: Symbol,
-	allocator := context.allocator,
-) -> ^Symbol {
+new_clone_symbol :: proc(data: Symbol, allocator := context.allocator) -> ^Symbol {
 	new_symbol := new(Symbol, allocator)
 	new_symbol^ = data
 	new_symbol.value = data.value
@@ -216,6 +216,7 @@ free_symbol :: proc(symbol: Symbol, allocator: mem.Allocator) {
 		common.free_ast(v.arg_types, allocator)
 	case SymbolStructValue:
 		delete(v.names, allocator)
+		delete(v.ranges, allocator)
 		common.free_ast(v.types, allocator)
 	case SymbolGenericValue:
 		common.free_ast(v.expr, allocator)
@@ -249,13 +250,12 @@ free_symbol :: proc(symbol: Symbol, allocator: mem.Allocator) {
 	case SymbolPackageValue:
 	case SymbolBitFieldValue:
 		delete(v.names, allocator)
+		delete(v.ranges, allocator)
 		common.free_ast(v.types, allocator)
 	}
 }
 
-symbol_type_to_completion_kind :: proc(
-	type: SymbolType,
-) -> CompletionItemKind {
+symbol_type_to_completion_kind :: proc(type: SymbolType) -> CompletionItemKind {
 	switch type {
 	case .Function:
 		return .Function
@@ -309,11 +309,7 @@ symbol_kind_to_type :: proc(type: SymbolType) -> SymbolKind {
 	}
 }
 
-symbol_to_expr :: proc(
-	symbol: Symbol,
-	file: string,
-	allocator := context.temp_allocator,
-) -> ^ast.Expr {
+symbol_to_expr :: proc(symbol: Symbol, file: string, allocator := context.temp_allocator) -> ^ast.Expr {
 
 	pos := tokenizer.Pos {
 		file = file,
@@ -349,6 +345,7 @@ symbol_to_expr :: proc(
 		return type
 	case SymbolUntypedValue:
 		type := new_type(ast.Basic_Lit, pos, end, allocator)
+		type.tok = v.tok
 		return type
 	case SymbolMatrixValue:
 		type := new_type(ast.Matrix_Type, pos, end, allocator)
