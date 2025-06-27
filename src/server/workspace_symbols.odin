@@ -40,10 +40,25 @@ get_workspace_symbols :: proc(query: string) -> (workspace_symbols: []WorkspaceS
 
 	log.error(pkgs)
 
-	_pkg: for pkg in pkgs {
-		matches, err := filepath.glob(fmt.tprintf("%v/*.odin", pkg), context.temp_allocator)
+	is_odin_package :: proc(pkg_path: string) -> bool {
+		monolithic_file_path := filepath.join({pkg_path, ".ODIN_MONOLITHIC_PACKAGE"}, context.temp_allocator)
+		if os.exists(monolithic_file_path) {
+			FOUND_FILE_SENTINEL : os.Error : os.General_Error.Exist
+			walk_proc :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (err: os.Error, skip_dir: bool) {
+				if !info.is_dir && filepath.ext(info.name) == ".odin" {
+					return FOUND_FILE_SENTINEL, true
+				}
+				return nil, false
+			}
+			err := filepath.walk(pkg_path, walk_proc, nil)
+			return err == FOUND_FILE_SENTINEL
+		}
+		matches, err := filepath.glob(fmt.tprintf("%v/*.odin", pkg_path), context.temp_allocator)
+		return err == .None && len(matches) > 0
+	}
 
-		if len(matches) == 0 {
+	_pkg: for pkg in pkgs {
+		if !is_odin_package(pkg) {
 			continue
 		}
 

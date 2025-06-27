@@ -95,11 +95,29 @@ try_build_package :: proc(pkg_name: string) {
 		return
 	}
 
-	matches, err := filepath.glob(fmt.tprintf("%v/*.odin", pkg_name), context.temp_allocator)
+	monolithic_file_path := path.join({pkg_name, ".ODIN_MONOLITHIC_PACKAGE"}, context.temp_allocator)
+	is_monolithic := os.exists(monolithic_file_path)
 
-	if err != .None {
-		log.errorf("Failed to glob %v for indexing package", pkg_name)
-		return
+	matches: []string
+	if is_monolithic {
+		files := make([dynamic]string, 0, 10, context.temp_allocator)
+		// Recursive walk for monolithic packages
+		walk_proc :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (err: os.Error, skip_dir: bool) {
+			data := cast(^[dynamic]string)user_data
+			if !info.is_dir && filepath.ext(info.name) == ".odin" {
+				append(data, strings.clone(info.fullpath, context.temp_allocator))
+			}
+			return nil, false
+		}
+		filepath.walk(pkg_name, walk_proc, &files)
+		matches = files[:]
+	} else {
+		err: filepath.Match_Error
+		matches, err = filepath.glob(fmt.tprintf("%v/*.odin", pkg_name), context.temp_allocator)
+		if err != .None {
+			log.errorf("Failed to glob %v for indexing package", pkg_name)
+			return
+		}
 	}
 
 	arena: runtime.Arena
