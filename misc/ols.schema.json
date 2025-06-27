@@ -60,6 +60,11 @@
 			"description": "Use snippets when completing procedures—adds parenthesis after the name.",
 			"default": true
 		},
+		"enable_auto_import": {
+			"type": "boolean",
+			"description": "Automatically import packages that aren't in your import on completion",
+			"default": true
+		},
 		"enable_references": { "type": "boolean" },
 		"enable_fake_methods": {
 			"type": "boolean",
@@ -100,6 +105,13 @@
 					"checker_path": {
 						"type": "array",
 						"description": "List of paths where to run the checker.",
+						"items": {
+							"type": "string"
+						}
+					},
+					"exclude_path": {
+						"type": "array",
+						"description": "List of paths that will be excluded from workspace symbol searches.",
 						"items": {
 							"type": "string"
 						}

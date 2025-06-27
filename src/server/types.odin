@@ -33,6 +33,15 @@ ResponseParams :: union {
 	common.Range,
 }
 
+RequestMessage :: struct {
+	jsonrpc: string,
+	method:  string,
+	id:      RequestId,
+	params:  union {
+		RegistrationParams,
+	},
+}
+
 ResponseMessage :: struct {
 	jsonrpc: string,
 	id:      RequestId,
@@ -84,6 +93,33 @@ RequestInitializeParams :: struct {
 	clientInfo:            ClientInfo,
 }
 
+FileChangeType :: enum {
+	Created = 1,
+	Changed = 2,
+	Deleted = 3,
+}
+
+FileEvent :: struct {
+	uri:  string,
+	type: int,
+}
+
+DidChangeWatchedFilesParams :: struct {
+	changes: [dynamic]FileEvent,
+}
+
+Registration :: struct {
+	id:              string,
+	method:          string,
+	registerOptions: union {
+		DidChangeWatchedFilesRegistrationOptions,
+	},
+}
+
+RegistrationParams :: struct {
+	registrations: []Registration,
+}
+
 ClientInfo :: struct {
 	name: string,
 }
@@ -96,6 +132,7 @@ MarkupContent :: struct {
 ServerCapabilities :: struct {
 	textDocumentSync:           TextDocumentSyncOptions,
 	definitionProvider:         bool,
+	typeDefinitionProvider:     bool,
 	completionProvider:         CompletionOptions,
 	signatureHelpProvider:      SignatureHelpOptions,
 	semanticTokensProvider:     SemanticTokensOptions,
@@ -109,10 +146,13 @@ ServerCapabilities :: struct {
 	documentLinkProvider:       DocumentLinkOptions,
 }
 
+DidChangeWatchedFilesRegistrationOptions :: struct {
+	watchers: []FileSystemWatcher,
+}
+
 RenameOptions :: struct {
 	prepareProvider: bool,
 }
-
 
 CompletionOptions :: struct {
 	resolveProvider:   bool,
@@ -174,7 +214,17 @@ ParameterInformationCapabilities :: struct {
 ClientCapabilities :: struct {
 	textDocument: TextDocumentClientCapabilities,
 	general:      GeneralClientCapabilities,
+	workspace:    WorkspaceCapabilities,
 }
+
+WorkspaceCapabilities :: struct {
+	didChangeWatchedFiles: DidChangeWatchedFilesClientCapabilities,
+}
+
+DidChangeWatchedFilesClientCapabilities :: struct {
+	dynamicRegistration: bool,
+}
+
 
 RangeOptional :: union {
 	common.Range,
@@ -341,6 +391,10 @@ TextDocumentSyncOptions :: struct {
 	save:      SaveOptions,
 }
 
+FileSystemWatcher :: struct {
+	globPattern: string,
+}
+
 OlsConfig :: struct {
 	collections:                       [dynamic]OlsConfigCollection,
 	thread_pool_count:                 Maybe(int),
@@ -358,6 +412,7 @@ OlsConfig :: struct {
 	enable_fake_methods:               Maybe(bool),
 	enable_procedure_snippet:          Maybe(bool),
 	enable_checker_only_saved:         Maybe(bool),
+	enable_auto_import:                Maybe(bool),
 	disable_parser_errors:             Maybe(bool),
 	verbose:                           Maybe(bool),
 	file_log:                          Maybe(bool),

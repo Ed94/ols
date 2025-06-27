@@ -119,6 +119,13 @@ local_scope :: proc(data: ^FileResolveData, stmt: ^ast.Stmt) {
 	add_local_group(data.ast_context, data.ast_context.local_id)
 
 	data.position_context.position = stmt.end.offset
+	data.position_context.nested_position = data.position_context.position
+
+	data.ast_context.non_mutable_only = true
+
+	get_locals_stmt(data.ast_context.file, stmt, data.ast_context, data.position_context)
+
+	data.ast_context.non_mutable_only = false
 
 	get_locals_stmt(data.ast_context.file, stmt, data.ast_context, data.position_context)
 }
@@ -194,7 +201,12 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 						symbol = symbol,
 					}
 				}
+			}
 
+			#partial switch v in n.expr.derived {
+			// TODO: Should there be more here?
+			case ^ast.Selector_Expr, ^ast.Index_Expr, ^ast.Ident:
+				resolve_node(n.expr, data)
 			}
 		} else {
 			if symbol, ok := resolve_type_expression(data.ast_context, &n.node); ok {
@@ -203,10 +215,12 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 					symbol = symbol,
 				}
 			}
+
+			resolve_node(n.expr, data)
+			resolve_node(n.field, data)
 		}
 
-		resolve_node(n.expr, data)
-		resolve_node(n.field, data)
+
 	case ^Field_Value:
 		data.position_context.field_value = n
 
@@ -327,16 +341,19 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 
 		defer {
 			data.position_context.call = old_call
-			data.ast_context.call = old_call
 		}
 
 		resolve_node(n.expr, data)
+
+		data.ast_context.call = old_call
 
 		for arg in n.args {
 			data.position_context.position = arg.pos.offset
 			resolve_node(arg, data)
 		}
 	case ^Index_Expr:
+		data.position_context.previous_index = data.position_context.index
+		data.position_context.index = n
 		resolve_node(n.expr, data)
 		resolve_node(n.index, data)
 	case ^Deref_Expr:

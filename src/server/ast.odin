@@ -1,4 +1,5 @@
-package common
+#+feature dynamic-literals
+package server
 
 import "core:fmt"
 import "core:log"
@@ -183,6 +184,20 @@ unwrap_pointer_ident :: proc(expr: ^ast.Expr) -> (ast.Ident, int, bool) {
 		}
 	}
 
+	// Check for parapoly specialization
+	if expr != nil {
+		if poly, ok := expr.derived.(^ast.Poly_Type); ok {
+			expr = poly.specialization
+		}
+	}
+
+	// Check for parapoly self
+	if expr != nil {
+		if call, ok := expr.derived.(^ast.Call_Expr); ok {
+			expr = call.expr
+		}
+	}
+
 	if expr != nil {
 		if ident, ok := expr.derived.(^ast.Ident); ok {
 			return ident^, n, ok
@@ -342,6 +357,76 @@ collect_value_decl :: proc(
 	}
 }
 
+collect_when_stmt :: proc(
+	exprs: ^[dynamic]GlobalExpr,
+	file: ast.File,
+	file_tags: parser.File_Tags,
+	when_decl: ^ast.When_Stmt,
+	skip_private: bool,
+) {
+	if when_decl.cond == nil {
+		return
+	}
+
+	if when_decl.body == nil {
+		return
+	}
+
+	if resolve_when_condition(when_decl.cond) {
+		if block, ok := when_decl.body.derived.(^ast.Block_Stmt); ok {
+			for stmt in block.stmts {
+				if when_stmt, ok := stmt.derived.(^ast.When_Stmt); ok {
+					collect_when_stmt(exprs, file, file_tags, when_stmt, skip_private)
+				} else if foreign_decl, ok := stmt.derived.(^ast.Foreign_Block_Decl); ok {
+					if foreign_decl.body == nil {
+						continue
+					}
+
+					if foreign_block, ok := foreign_decl.body.derived.(^ast.Block_Stmt); ok {
+						for foreign_stmt in foreign_block.stmts {
+							collect_value_decl(exprs, file, file_tags, foreign_stmt, skip_private)
+						}
+					}
+				} else {
+					collect_value_decl(exprs, file, file_tags, stmt, skip_private)
+				}
+			}
+		}
+	} else {
+		else_stmt := when_decl.else_stmt
+
+		for else_stmt != nil {
+			if else_when, ok := else_stmt.derived.(^ast.When_Stmt); ok {
+				if resolve_when_condition(else_when.cond) {
+					if block, ok := else_when.body.derived.(^ast.Block_Stmt); ok {
+						for stmt in block.stmts {
+							if when_stmt, ok := stmt.derived.(^ast.When_Stmt); ok {
+								collect_when_stmt(exprs, file, file_tags, when_stmt, skip_private)
+							} else if foreign_decl, ok := stmt.derived.(^ast.Foreign_Block_Decl); ok {
+								if foreign_decl.body != nil {
+									if foreign_block, ok := foreign_decl.body.derived.(^ast.Block_Stmt); ok {
+										for foreign_stmt in foreign_block.stmts {
+											collect_value_decl(exprs, file, file_tags, foreign_stmt, skip_private)
+										}
+									}
+								}
+							} else {
+								collect_value_decl(exprs, file, file_tags, stmt, skip_private)
+							}
+						}
+					}
+					return
+				}
+				else_stmt = else_when.else_stmt
+			} else {
+				return
+			}
+		}
+	}
+
+
+}
+
 collect_globals :: proc(file: ast.File, skip_private := false) -> []GlobalExpr {
 	exprs := make([dynamic]GlobalExpr, context.temp_allocator)
 	defer shrink(&exprs)
@@ -352,68 +437,7 @@ collect_globals :: proc(file: ast.File, skip_private := false) -> []GlobalExpr {
 		if value_decl, ok := decl.derived.(^ast.Value_Decl); ok {
 			collect_value_decl(&exprs, file, file_tags, decl, skip_private)
 		} else if when_decl, ok := decl.derived.(^ast.When_Stmt); ok {
-			if when_decl.cond == nil {
-				continue
-			}
-
-			if when_decl.body == nil {
-				continue
-			}
-
-			if binary, ok := when_decl.cond.derived.(^ast.Binary_Expr); ok {
-				if binary.left == nil || binary.right == nil {
-					continue
-				}
-
-				ident: ^ast.Ident
-				implicit: ^ast.Implicit_Selector_Expr
-
-				if t, ok := binary.left.derived.(^ast.Ident); ok {
-					ident = cast(^ast.Ident)binary.left
-				} else if t, ok := binary.left.derived.(^ast.Implicit_Selector_Expr); ok {
-					implicit = cast(^ast.Implicit_Selector_Expr)binary.left
-				}
-
-				if t, ok := binary.right.derived.(^ast.Ident); ok {
-					ident = cast(^ast.Ident)binary.right
-				} else if t, ok := binary.right.derived.(^ast.Implicit_Selector_Expr); ok {
-					implicit = cast(^ast.Implicit_Selector_Expr)binary.right
-				}
-
-				if ident != nil && implicit != nil {
-					allowed := false
-
-					if binary.op.text == "==" {
-						allowed =
-							ident.name == "ODIN_OS" && implicit.field.name == fmt.tprint(ODIN_OS) ||
-							ident.name == "ODIN_ARCH" && implicit.field.name == fmt.tprint(ODIN_ARCH)
-					} else if binary.op.text == "!=" {
-						allowed =
-							ident.name == "ODIN_OS" && implicit.field.name != fmt.tprint(ODIN_OS) ||
-							ident.name == "ODIN_ARCH" && implicit.field.name != fmt.tprint(ODIN_ARCH)
-					}
-
-					if allowed {
-						if block, ok := when_decl.body.derived.(^ast.Block_Stmt); ok {
-							for stmt in block.stmts {
-								collect_value_decl(&exprs, file, file_tags, stmt, skip_private)
-							}
-						}
-					} else if ident.name != "ODIN_OS" && ident.name != "ODIN_ARCH" {
-						if block, ok := when_decl.body.derived.(^ast.Block_Stmt); ok {
-							for stmt in block.stmts {
-								collect_value_decl(&exprs, file, file_tags, stmt, skip_private)
-							}
-						}
-					}
-				}
-			} else {
-				if block, ok := when_decl.body.derived.(^ast.Block_Stmt); ok {
-					for stmt in block.stmts {
-						collect_value_decl(&exprs, file, file_tags, stmt, skip_private)
-					}
-				}
-			}
+			collect_when_stmt(&exprs, file, file_tags, when_decl, skip_private)
 		} else if foreign_decl, ok := decl.derived.(^ast.Foreign_Block_Decl); ok {
 			if foreign_decl.body == nil {
 				continue
@@ -694,6 +718,8 @@ free_ast_node :: proc(node: ^ast.Node, allocator: mem.Allocator) {
 	case ^ast.Or_Else_Expr:
 		free_ast(n.x, allocator)
 		free_ast(n.y, allocator)
+	case ^ast.Or_Return_Expr:
+		free_ast(n.expr, allocator)
 	case:
 		panic(fmt.aprintf("free Unhandled node kind: %v", node.derived))
 	}
@@ -1098,8 +1124,11 @@ build_string_node :: proc(node: ^ast.Node, builder: ^strings.Builder, remove_poi
 	case ^Proc_Type:
 		strings.write_string(builder, "proc(")
 		build_string(n.params, builder, remove_pointers)
-		strings.write_string(builder, ") -> ")
-		build_string(n.results, builder, remove_pointers)
+		strings.write_string(builder, ")")
+		if n.results != nil {
+			strings.write_string(builder, " -> ")
+			build_string(n.results, builder, remove_pointers)
+		}
 	case ^Pointer_Type:
 		if !remove_pointers {
 			strings.write_string(builder, "^")
@@ -1162,4 +1191,52 @@ repeat :: proc(value: string, count: int, allocator := context.allocator) -> str
 		return ""
 	}
 	return strings.repeat(value, count, allocator)
+}
+
+construct_struct_field_docs :: proc(file: ast.File, v: ^ast.Struct_Type) {
+	for field, i in v.fields.list {
+		// There is currently a bug in the odin parser where it adds line comments for a field to the
+		// docs of the following field, we address this problem here.
+		// see https://github.com/odin-lang/Odin/issues/5353
+		if field.comment == nil {
+			// We check if the comment is at the start of the next field
+			if i != len(v.fields.list) - 1 {
+				next_field := v.fields.list[i + 1]
+				if next_field.docs != nil && len(next_field.docs.list) > 0 {
+					list := next_field.docs.list
+					if list[0].pos.line == field.pos.line {
+						field.comment = ast.new(ast.Comment_Group, list[0].pos, parser.end_pos(list[0]))
+						field.comment.list = list[:1]
+						if len(list) > 1 {
+							next_field.docs = ast.new(
+								ast.Comment_Group,
+								list[1].pos,
+								parser.end_pos(list[len(list) - 2]),
+							)
+							next_field.docs.list = list[1:]
+						} else {
+							next_field.docs = nil
+						}
+					}
+				}
+			} else {
+				// We need to check the file to see if it contains a line comment as there is no next field
+				// TODO: linear scan might be a bit slow for files with lots of comments?
+				for c in file.comments {
+					if c.pos.line == field.pos.line {
+						for item, j in c.list {
+							field.comment = ast.new(ast.Comment_Group, item.pos, parser.end_pos(item))
+							if j == len(c.list) - 1 {
+								field.comment.list = c.list[j:]
+							} else {
+								field.comment.list = c.list[j:j + 1]
+							}
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
 }

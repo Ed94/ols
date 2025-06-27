@@ -47,13 +47,6 @@ get_definition_location :: proc(document: ^Document, position: common.Position) 
 
 	location: common.Location
 
-	ast_context := make_ast_context(
-		document.ast,
-		document.imports,
-		document.package_name,
-		document.uri.uri,
-		document.fullpath,
-	)
 
 	uri: string
 
@@ -63,6 +56,16 @@ get_definition_location :: proc(document: ^Document, position: common.Position) 
 		log.warn("Failed to get position context")
 		return {}, false
 	}
+
+	ast_context := make_ast_context(
+		document.ast,
+		document.imports,
+		document.package_name,
+		document.uri.uri,
+		document.fullpath,
+	)
+
+	ast_context.position_hint = position_context.hint
 
 	get_globals(document.ast, &ast_context)
 
@@ -76,25 +79,23 @@ get_definition_location :: proc(document: ^Document, position: common.Position) 
 		}
 	} else if position_context.selector_expr != nil {
 		//if the base selector is the client wants to go to.
-		if base, ok := position_context.selector.derived.(^ast.Ident); ok && position_context.identifier != nil {
+		if position_in_node(position_context.selector, position_context.position) &&
+		   position_context.identifier != nil {
 			ident := position_context.identifier.derived.(^ast.Ident)
+			if resolved, ok := resolve_location_identifier(&ast_context, ident^); ok {
+				location.range = resolved.range
 
-			if position_in_node(base, position_context.position) {
-				if resolved, ok := resolve_location_identifier(&ast_context, ident^); ok {
-					location.range = resolved.range
-
-					if resolved.uri == "" {
-						location.uri = document.uri.uri
-					} else {
-						location.uri = resolved.uri
-					}
-
-					append(&locations, location)
-
-					return locations[:], true
+				if resolved.uri == "" {
+					location.uri = document.uri.uri
 				} else {
-					return {}, false
+					location.uri = resolved.uri
 				}
+
+				append(&locations, location)
+
+				return locations[:], true
+			} else {
+				return {}, false
 			}
 		}
 
@@ -106,7 +107,7 @@ get_definition_location :: proc(document: ^Document, position: common.Position) 
 		}
 	} else if position_context.field_value != nil &&
 	   position_context.comp_lit != nil &&
-	   !common.is_expr_basic_lit(position_context.field_value.field) &&
+	   !is_expr_basic_lit(position_context.field_value.field) &&
 	   position_in_node(position_context.field_value.field, position_context.position) {
 		if resolved, ok := resolve_location_comp_lit_field(&ast_context, &position_context); ok {
 			location.range = resolved.range

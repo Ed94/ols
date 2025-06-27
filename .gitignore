@@ -16,5 +16,6 @@
 tests/tests
 ols.json
 .vscode/
+deno.lock
 .vscode/settings.json
 build/last_built_commit_ols.txt

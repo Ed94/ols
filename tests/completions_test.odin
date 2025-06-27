@@ -651,7 +651,7 @@ ast_for_in_identifier_completion :: proc(t: ^testing.T) {
 	}
 
 
-	test.expect_completion_details(t, &source, "", {"test.my_element: My_Struct"})
+	test.expect_completion_details(t, &source, "", {"test.my_element: test.My_Struct :: struct"})
 }
 
 @(test)
@@ -675,7 +675,7 @@ ast_for_in_call_expr_completion :: proc(t: ^testing.T) {
 	}
 
 
-	test.expect_completion_details(t, &source, ".", {"test.zstep: Step"})
+	test.expect_completion_details(t, &source, ".", {"test.zstep: test.Step :: struct"})
 }
 
 
@@ -1624,6 +1624,27 @@ ast_new_completion :: proc(t: ^testing.T) {
 }
 
 @(test)
+ast_new_completion_for_proc_defined :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package main
+		new :: proc($T: typeid) -> (^T, Allocator_Error) #optional_second {
+		}
+
+		main :: proc() {
+			Http_Ctx :: struct {
+				user_ctx: rawptr,
+			}
+			http_ctx := new(Http_Ctx)
+			http_c{*}
+		}
+
+		`,
+	}
+
+	test.expect_completion_details(t, &source, "", {"test.Http_Ctx: struct"})
+}
+
+@(test)
 ast_new_clone_completion :: proc(t: ^testing.T) {
 	source := test.Source {
 		main = `package main
@@ -1640,7 +1661,7 @@ ast_new_clone_completion :: proc(t: ^testing.T) {
 		`,
 	}
 
-	test.expect_completion_details(t, &source, "", {"test.adzz: ^Foo"})
+	test.expect_completion_details(t, &source, "", {"test.adzz: ^test.Foo :: struct"})
 }
 
 @(test)
@@ -1714,7 +1735,7 @@ ast_index_proc_parameter_completion :: proc(t: ^testing.T) {
 		packages = packages[:],
 	}
 
-	test.expect_completion_details(t, &source, ".", {"my_package.param: My_Struct"})
+	test.expect_completion_details(t, &source, ".", {"my_package.param: my_package.My_Struct :: struct"})
 }
 
 @(test)
@@ -2513,7 +2534,7 @@ ast_poly_struct_with_poly :: proc(t: ^testing.T) {
 		`,
 	}
 
-	test.expect_completion_details(t, &source, "", {"test.first: ^Animal"})
+	test.expect_completion_details(t, &source, "", {"test.first: ^test.Animal :: struct"})
 }
 
 @(test)
@@ -2992,7 +3013,7 @@ ast_enumerated_array_range_completion :: proc(t: ^testing.T) {
 		`,
 	}
 
-	test.expect_completion_details(t, &source, "", {"test.indezx: Enum"})
+	test.expect_completion_details(t, &source, "", {"test.indezx: test.Enum :: enum"})
 }
 
 @(test)
@@ -3143,4 +3164,145 @@ ast_generics_call_reference_comp_literal :: proc(t: ^testing.T) {
 	}
 
 	test.expect_completion_details(t, &source, "", {"Bar.something_else: i32"})
+}
+
+@(test)
+ast_completion_on_struct_using_field_selector :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package main
+		Inner :: struct {
+			field: int,
+		}
+		Outer :: struct {
+			using inner: Inner,
+		}
+
+		main :: proc() {
+			data: Outer
+			data.inner.{*}
+		}
+		`,
+	}
+
+	test.expect_completion_details(t, &source, ".", {"Inner.field: int"})
+}
+
+@(test)
+ast_completion_on_struct_using_field_selector_directly :: proc(t: ^testing.T) {
+	packages := make([dynamic]test.Package, context.temp_allocator)
+
+	append(
+		&packages,
+		test.Package {
+			pkg = "my_package",
+			source = `package my_package
+		InnerInner :: struct {
+			field: int,
+		}
+
+		Inner :: struct {
+			using ii: InnerInner,
+		}
+
+		Outer :: struct {
+			using inner: Inner,
+		}
+
+		`,
+		},
+	)
+	source := test.Source {
+		main = `package main
+		import "my_package"
+
+
+		main :: proc() {
+			data: my_package.Outer
+			data.{*}
+		}
+		`,
+		packages = packages[:],
+	}
+
+	test.expect_completion_details(t, &source, ".", {"Outer.field: int"})
+}
+
+@(test)
+ast_completion_on_string_iterator :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package main
+		split_lines_iterator :: proc(s: ^string) -> (line: string, ok: bool) {
+		}
+
+		main :: proc() {
+			s: string
+
+			for linze in split_lines_iterator(&s) {
+				linz{*}
+			}
+		}
+		`,
+	}
+
+	test.expect_completion_details(t, &source, "", {"test.linze: string"})
+}
+
+@(test)
+ast_completion_multi_pointer :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package main
+
+		S1 :: struct {
+			s2_ptr: [^]S2,
+		}
+
+		S2 :: struct {
+			field: int,
+		}
+
+		main :: proc() {
+			x := S1 {
+				s2_ptr = &S2 {
+					{*}
+				}
+			}
+		}
+		`,
+	}
+
+	test.expect_completion_details(t, &source, "", {"S2.field: int"})
+}
+
+@(test)
+ast_completion_multi_pointer_nested :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package main
+
+		S1 :: struct {
+			s2_ptr: [^]S2,
+		}
+
+		S2 :: struct {
+			field: S3,
+			i: int,
+			s: int,
+		}
+
+		S3 :: struct {
+			s3: int,
+		}
+
+		main :: proc() {
+			x := S1 {
+				s2_ptr = &S2 {
+					field = S3 {
+						{*}
+					}
+				}
+			}
+		}
+		`,
+	}
+
+	test.expect_completion_details(t, &source, "", {"S3.s3: int"})
 }

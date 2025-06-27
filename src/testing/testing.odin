@@ -3,6 +3,7 @@ package ols_testing
 import "core:fmt"
 import "core:log"
 import "core:mem"
+import "core:mem/virtual"
 import "core:odin/ast"
 import "core:odin/parser"
 import "core:path/filepath"
@@ -34,10 +35,10 @@ setup :: proc(src: ^Source) {
 	src.document.client_owned = true
 	src.document.text = transmute([]u8)src.main
 	src.document.used_text = len(src.document.text)
-	src.document.allocator = new(common.Scratch_Allocator, context.temp_allocator)
+	src.document.allocator = new(virtual.Arena, context.temp_allocator)
 	src.document.package_name = "test"
 
-	common.scratch_allocator_init(src.document.allocator, mem.Kilobyte * 2000, context.temp_allocator)
+	_ = virtual.arena_init_growing(src.document.allocator)
 
 	//no unicode in tests currently
 	current, last: u8
@@ -73,7 +74,7 @@ setup :: proc(src: ^Source) {
 	server.document_refresh(src.document, &src.config, nil)
 
 	for src_pkg in src.packages {
-		context.allocator = common.scratch_allocator(src.document.allocator)
+		context.allocator = virtual.arena_allocator(src.document.allocator)
 
 		uri := common.create_uri(fmt.aprintf("test/%v/package.odin", src_pkg.pkg), context.temp_allocator)
 
@@ -117,20 +118,9 @@ setup :: proc(src: ^Source) {
 
 @(private)
 teardown :: proc(src: ^Source) {
-	//A lot of these deletes are managed by other systems in ols, but to simplify it, we just delete them here in tests.
-
 	server.free_index()
 	server.indexer.index = {}
-
-	delete(src.document.package_name)
-
-	for k, v in server.build_cache.loaded_pkgs {
-		delete(k)
-	}
-
-	delete(server.build_cache.loaded_pkgs)
-
-	common.scratch_allocator_destroy(src.document.allocator)
+	virtual.arena_destroy(src.document.allocator)
 }
 
 expect_signature_labels :: proc(t: ^testing.T, src: ^Source, expect_labels: []string) {
@@ -235,7 +225,7 @@ expect_completion_details :: proc(t: ^testing.T, src: ^Source, trigger_character
 		for completion, j in completion_list.items {
 			if expect_detail == completion.detail {
 				flags[i] += 1
-			}
+			}	
 		}
 	}
 
@@ -296,6 +286,45 @@ expect_definition_locations :: proc(t: ^testing.T, src: ^Source, expect_location
 	for flag, i in flags {
 		if flag != 1 {
 			log.errorf("Expected location %v, but received %v", expect_locations[i].range, locations)
+		}
+	}
+}
+
+expect_type_definition_locations :: proc(t: ^testing.T, src: ^Source, expect_locations: []common.Location) {
+	setup(src)
+	defer teardown(src)
+
+	locations, ok := server.get_type_definition_locations(src.document, src.position)
+
+	if !ok {
+		log.error("Failed get_definition_location")
+	}
+
+	if len(expect_locations) == 0 && len(locations) > 0 {
+		log.errorf("Expected empty locations, but received %v", locations)
+	}
+
+	flags := make([]int, len(expect_locations), context.temp_allocator)
+
+	for expect_location, i in expect_locations {
+		for location, j in locations {
+			if expect_location.uri != "" {
+				if location.range == expect_location.range && location.uri == expect_location.uri {
+					flags[i] += 1
+				}
+			} else if location.range == expect_location.range {
+				flags[i] += 1
+			}
+		}
+	}
+
+	for flag, i in flags {
+		if flag != 1 {
+			if expect_locations[i].uri == "" {
+				log.errorf("Expected location %v, but received %v", expect_locations[i].range, locations)
+			} else {
+				log.errorf("Expected location %v, but received %v", expect_locations[i], locations)
+			}
 		}
 	}
 }

@@ -184,7 +184,7 @@ write_semantic_node :: proc(
 		return
 	}
 
-	name := common.get_ast_node_string(node, builder.src)
+	name := get_ast_node_string(node, builder.src)
 
 	write_semantic_at_pos(builder, node.pos.offset, len(name), type, modifiers)
 }
@@ -572,7 +572,7 @@ visit_ident :: proc(
 		     SymbolFixedArrayValue,
 		     SymbolSliceValue,
 		     SymbolMapValue,
-		     SymbolMultiPointer,
+		     SymbolMultiPointerValue,
 		     SymbolBasicValue:
 			write_semantic_node(builder, ident, .Type, modifiers)
 		case SymbolUntypedValue:

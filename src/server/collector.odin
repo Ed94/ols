@@ -74,28 +74,7 @@ make_symbol_collection :: proc(allocator := context.allocator, config: ^common.C
 }
 
 delete_symbol_collection :: proc(collection: SymbolCollection) {
-	for k, v in collection.packages {
-		for k2, v2 in v.symbols {
-			free_symbol(v2, collection.allocator)
-		}
-	}
-
-	for k, v in collection.unique_strings {
-		delete(v, collection.allocator)
-	}
-
-	for k, v in collection.packages {
-		for k2, v2 in v.methods {
-			delete(v2)
-		}
-		delete(v.methods)
-		delete(v.objc_structs)
-		delete(v.symbols)
-		delete(v.imports)
-	}
-
-	delete(collection.packages)
-	delete(collection.unique_strings)
+	free_all(collection.allocator)
 }
 
 collect_procedure_fields :: proc(
@@ -139,40 +118,40 @@ collect_procedure_fields :: proc(
 
 collect_struct_fields :: proc(
 	collection: ^SymbolCollection,
-	struct_type: ast.Struct_Type,
+	struct_type: ^ast.Struct_Type,
 	package_map: map[string]string,
 	file: ast.File,
 ) -> SymbolStructValue {
-	names := make([dynamic]string, 0, collection.allocator)
-	types := make([dynamic]^ast.Expr, 0, collection.allocator)
-	usings := make(map[int]bool, 0, collection.allocator)
-	ranges := make([dynamic]common.Range, 0, collection.allocator)
+	b := symbol_struct_value_builder_make(collection.allocator)
+	construct_struct_field_docs(file, struct_type)
 
 	for field in struct_type.fields.list {
 		for n in field.names {
 			if ident, ok := n.derived.(^ast.Ident); ok {
-				append(&names, get_index_unique_string(collection, ident.name))
+				append(&b.names, get_index_unique_string(collection, ident.name))
 
 				cloned := clone_type(field.type, collection.allocator, &collection.unique_strings)
 				replace_package_alias(cloned, package_map, collection)
-				append(&types, cloned)
+				append(&b.types, cloned)
 
 				if .Using in field.flags {
-					usings[len(names) - 1] = true
+					append(&b.unexpanded_usings, len(b.names) - 1)
+					b.usings[len(b.names) - 1] = struct{}{}
 				}
 
-				append(&ranges, common.get_token_range(n, file.src))
+				append(&b.ranges, common.get_token_range(n, file.src))
+
+				cloned_docs := clone_type(field.docs, collection.allocator, &collection.unique_strings)
+				append(&b.docs, cloned_docs)
+				cloned_comment := clone_type(field.comment, collection.allocator, &collection.unique_strings)
+				append(&b.comments, cloned_comment)
+				append(&b.from_usings, -1)
 			}
 		}
 	}
 
-	value := SymbolStructValue {
-		names  = names[:],
-		types  = types[:],
-		ranges = ranges[:],
-		usings = usings,
-		poly   = cast(^ast.Field_List)clone_type(struct_type.poly_params, collection.allocator, &collection.unique_strings),
-	}
+	value := to_symbol_struct_value(b)
+	value.poly   = cast(^ast.Field_List)clone_type(struct_type.poly_params, collection.allocator, &collection.unique_strings)
 
 	return value
 }
@@ -341,12 +320,12 @@ collect_multi_pointer :: proc(
 	collection: ^SymbolCollection,
 	array: ast.Multi_Pointer_Type,
 	package_map: map[string]string,
-) -> SymbolMultiPointer {
+) -> SymbolMultiPointerValue {
 	elem := clone_type(array.elem, collection.allocator, &collection.unique_strings)
 
 	replace_package_alias(elem, package_map, collection)
 
-	return SymbolMultiPointer{expr = elem}
+	return SymbolMultiPointerValue{expr = elem}
 }
 
 
@@ -389,7 +368,7 @@ collect_method :: proc(collection: ^SymbolCollection, symbol: Symbol) {
 			return
 		}
 
-		expr, _, ok := common.unwrap_pointer_ident(value.arg_types[0].type)
+		expr, _, ok := unwrap_pointer_ident(value.arg_types[0].type)
 
 		if !ok {
 			return
@@ -427,9 +406,9 @@ collect_objc :: proc(collection: ^SymbolCollection, attributes: []^ast.Attribute
 	pkg := &collection.packages[symbol.pkg]
 
 	if value, ok := symbol.value.(SymbolProcedureValue); ok {
-		objc_name, found_objc_name := common.get_attribute_objc_name(attributes)
+		objc_name, found_objc_name := get_attribute_objc_name(attributes)
 
-		if objc_type := common.get_attribute_objc_type(attributes); objc_type != nil && found_objc_name {
+		if objc_type := get_attribute_objc_type(attributes); objc_type != nil && found_objc_name {
 
 			if struct_ident, ok := objc_type.derived.(^ast.Ident); ok {
 				struct_name := get_index_unique_string_collection(collection, struct_ident.name)
@@ -458,18 +437,22 @@ collect_objc :: proc(collection: ^SymbolCollection, attributes: []^ast.Attribute
 	}
 }
 
-collect_imports :: proc(collection: ^SymbolCollection, file: ast.File) {
+collect_imports :: proc(collection: ^SymbolCollection, file: ast.File, directory: string) {
+	_pkg := get_index_unique_string(collection, directory)
+
+	if _pkg, ok := collection.packages[_pkg]; ok {
+
+	}
 
 }
+
 
 collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: string) -> common.Error {
 	forward, _ := filepath.to_slash(file.fullpath, context.temp_allocator)
 	directory := path.dir(forward, context.temp_allocator)
 	package_map := get_package_mapping(file, collection.config, directory)
 
-	exprs := common.collect_globals(file, true)
-
-	collect_imports(collection, file)
+	exprs := collect_globals(file, true)
 
 	for expr in exprs {
 		symbol: Symbol
@@ -513,9 +496,9 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 				)
 			}
 
-			if _, is_objc := common.get_attribute_objc_name(expr.attributes); is_objc {
+			if _, is_objc := get_attribute_objc_name(expr.attributes); is_objc {
 				symbol.flags |= {.ObjC}
-				if common.get_attribute_objc_is_class_method(expr.attributes) {
+				if get_attribute_objc_is_class_method(expr.attributes) {
 					symbol.flags |= {.ObjCIsClassMethod}
 				}
 			}
@@ -539,12 +522,12 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 		case ^ast.Struct_Type:
 			token = v^
 			token_type = .Struct
-			symbol.value = collect_struct_fields(collection, v^, package_map, file)
+			symbol.value = collect_struct_fields(collection, v, package_map, file)
 			symbol.signature = "struct"
 
-			if _, is_objc := common.get_attribute_objc_class_name(expr.attributes); is_objc {
+			if _, is_objc := get_attribute_objc_class_name(expr.attributes); is_objc {
 				symbol.flags |= {.ObjC}
-				if common.get_attribute_objc_is_class_method(expr.attributes) {
+				if get_attribute_objc_is_class_method(expr.attributes) {
 					symbol.flags |= {.ObjCIsClassMethod}
 				}
 			}
@@ -626,7 +609,7 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 		symbol.range = common.get_token_range(expr.name_expr, file.src)
 		symbol.name = get_index_unique_string(collection, name)
 		symbol.type = token_type
-		symbol.doc = common.get_doc(expr.docs, collection.allocator)
+		symbol.doc = get_doc(expr.docs, collection.allocator)
 
 		if expr.builtin || strings.contains(uri, "builtin.odin") {
 			symbol.pkg = "$builtin"
@@ -682,6 +665,9 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 			free_symbol(symbol, collection.allocator)
 		}
 	}
+
+	collect_imports(collection, file, directory)
+
 
 	return .None
 }

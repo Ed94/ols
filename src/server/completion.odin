@@ -1,3 +1,4 @@
+#+feature dynamic-literals
 package server
 
 import "core:fmt"
@@ -72,6 +73,7 @@ get_completion_list :: proc(
 		document.uri.uri,
 		document.fullpath,
 	)
+	ast_context.position_hint = position_context.hint
 
 	get_globals(document.ast, &ast_context)
 
@@ -137,6 +139,7 @@ get_completion_list :: proc(
 			return list, true
 		}
 	}
+
 
 	switch completion_type {
 	case .Comp_Lit:
@@ -279,7 +282,7 @@ get_comp_lit_completion :: proc(
 					item := CompletionItem {
 						label         = name,
 						kind          = .Field,
-						detail        = fmt.tprintf("%v.%v: %v", symbol.name, name, common.node_to_string(v.types[i])),
+						detail        = fmt.tprintf("%v.%v: %v", symbol.name, name, node_to_string(v.types[i])),
 						documentation = resolved.doc,
 					}
 
@@ -302,7 +305,7 @@ get_comp_lit_completion :: proc(
 					item := CompletionItem {
 						label         = name,
 						kind          = .Field,
-						detail        = fmt.tprintf("%v.%v: %v", symbol.name, name, common.node_to_string(v.types[i])),
+						detail        = fmt.tprintf("%v.%v: %v", symbol.name, name, node_to_string(v.types[i])),
 						documentation = resolved.doc,
 					}
 
@@ -372,6 +375,7 @@ get_selector_completion :: proc(
 	#partial switch v in selector.value {
 	case SymbolFixedArrayValue:
 		list.isIncomplete = true
+		append_magic_array_like_completion(position_context, selector, &items)
 
 		containsColor := 1
 		containsCoord := 1
@@ -411,7 +415,7 @@ get_selector_completion :: proc(
 				item := CompletionItem {
 					label  = fmt.tprintf("%v%v", field, k),
 					kind   = .Property,
-					detail = fmt.tprintf("%v%v: %v", field, k, common.node_to_string(v.expr)),
+					detail = fmt.tprintf("%v%v: %v", field, k, node_to_string(v.expr)),
 				}
 				append(&items, item)
 			}
@@ -428,7 +432,7 @@ get_selector_completion :: proc(
 				item := CompletionItem {
 					label  = fmt.tprintf("%v%v", field, k),
 					kind   = .Property,
-					detail = fmt.tprintf("%v%v: %v", field, k, common.node_to_string(v.expr)),
+					detail = fmt.tprintf("%v%v: %v", field, k, node_to_string(v.expr)),
 				}
 				append(&items, item)
 			}
@@ -445,7 +449,7 @@ get_selector_completion :: proc(
 				item := CompletionItem {
 					label  = fmt.tprintf("%v%v", field, k),
 					kind   = .Property,
-					detail = fmt.tprintf("%v%v: [%v]%v", field, k, containsColor, common.node_to_string(v.expr)),
+					detail = fmt.tprintf("%v%v: [%v]%v", field, k, containsColor, node_to_string(v.expr)),
 				}
 				append(&items, item)
 			}
@@ -460,7 +464,7 @@ get_selector_completion :: proc(
 				item := CompletionItem {
 					label  = fmt.tprintf("%v%v", field, k),
 					kind   = .Property,
-					detail = fmt.tprintf("%v%v: [%v]%v", field, k, containsCoord, common.node_to_string(v.expr)),
+					detail = fmt.tprintf("%v%v: [%v]%v", field, k, containsCoord, node_to_string(v.expr)),
 				}
 				append(&items, item)
 			}
@@ -489,15 +493,15 @@ get_selector_completion :: proc(
 				   is_selector {
 					item.label = fmt.aprintf(
 						"(%v%v)",
-						common.repeat("^", symbol.pointers, context.temp_allocator),
-						common.node_to_string(type, true),
+						repeat("^", symbol.pointers, context.temp_allocator),
+						node_to_string(type, true),
 					)
 				} else {
 					item.label = fmt.aprintf(
 						"(%v%v.%v)",
-						common.repeat("^", symbol.pointers, context.temp_allocator),
+						repeat("^", symbol.pointers, context.temp_allocator),
 						get_symbol_pkg_name(ast_context, symbol),
-						common.node_to_string(type, true),
+						node_to_string(type, true),
 					)
 				}
 
@@ -577,10 +581,9 @@ get_selector_completion :: proc(
 						continue
 					}
 				}
-				if !position_context.arrow && .ObjC in symbol.flags {
+				if !position_context.arrow && .ObjC in selector.flags {
 					continue
 				}
-
 
 				item := CompletionItem {
 					label         = name,
@@ -600,7 +603,7 @@ get_selector_completion :: proc(
 				item := CompletionItem {
 					label         = symbol.name,
 					kind          = .Field,
-					detail        = fmt.tprintf("%v: %v", name, common.node_to_string(v.types[i])),
+					detail        = fmt.tprintf("%v: %v", name, node_to_string(v.types[i])),
 					documentation = symbol.doc,
 				}
 
@@ -637,7 +640,7 @@ get_selector_completion :: proc(
 				item := CompletionItem {
 					label         = symbol.name,
 					kind          = .Field,
-					detail        = fmt.tprintf("%v: %v", name, common.node_to_string(v.types[i])),
+					detail        = fmt.tprintf("%v: %v", name, node_to_string(v.types[i])),
 					documentation = symbol.doc,
 				}
 
@@ -687,14 +690,19 @@ get_selector_completion :: proc(
 		}
 	case SymbolDynamicArrayValue:
 		list.isIncomplete = false
-		append_magic_dynamic_array_completion(position_context, selector, &items)
+		append_magic_array_like_completion(position_context, selector, &items)
 	case SymbolSliceValue:
 		list.isIncomplete = false
-		append_magic_dynamic_array_completion(position_context, selector, &items)
+		append_magic_array_like_completion(position_context, selector, &items)
 
 	case SymbolMapValue:
 		list.isIncomplete = false
 		append_magic_map_completion(position_context, selector, &items)
+
+	case SymbolBasicValue:
+		if selector.signature == "string" {
+			append_magic_array_like_completion(position_context, selector, &items)
+		}
 	}
 
 	list.items = items[:]
@@ -725,6 +733,7 @@ get_implicit_completion :: proc(
 
 		if position_context.comp_lit != nil {
 			if bitset_symbol, ok := resolve_type_expression(ast_context, position_context.value_decl.type); ok {
+				set_ast_package_from_symbol_scoped(ast_context, bitset_symbol)
 				if _enum_value, ok := unwrap_bitset(ast_context, bitset_symbol); ok {
 					enum_value = _enum_value
 				}
@@ -943,19 +952,22 @@ get_implicit_completion :: proc(
 								return
 							}
 						}
-					} else if s, ok := unwrap_bitset(ast_context, comp_symbol); ok {
-						for enum_name in s.names {
-							item := CompletionItem {
-								label  = enum_name,
-								kind   = .EnumMember,
-								detail = enum_name,
+					} else {
+						set_ast_package_set_scoped(ast_context, comp_symbol.pkg)
+						if s, ok := unwrap_bitset(ast_context, comp_symbol); ok {
+							for enum_name in s.names {
+								item := CompletionItem {
+									label  = enum_name,
+									kind   = .EnumMember,
+									detail = enum_name,
+								}
+
+								append(&items, item)
 							}
 
-							append(&items, item)
+							list.items = items[:]
+							return
 						}
-
-						list.items = items[:]
-						return
 					}
 				}
 			}
@@ -1279,7 +1291,7 @@ get_identifier_completion :: proc(
 		ident.name = k
 
 		if symbol, ok := resolve_type_identifier(ast_context, ident^); ok {
-			symbol.signature = get_signature(ast_context, ident^, symbol)
+			symbol.signature = get_signature(ast_context, symbol, short_signature = true)
 
 			build_procedure_symbol_signature(&symbol)
 
@@ -1320,7 +1332,7 @@ get_identifier_completion :: proc(
 			ident.name = k
 
 			if symbol, ok := resolve_type_identifier(ast_context, ident^); ok {
-				symbol.signature = get_signature(ast_context, ident^, symbol)
+				symbol.signature = get_signature(ast_context, symbol, short_signature = true)
 
 				build_procedure_symbol_signature(&symbol)
 
@@ -1368,7 +1380,7 @@ get_identifier_completion :: proc(
 		}
 	}
 
-	for keyword, _ in common.keyword_map {
+	for keyword, _ in keyword_map {
 		symbol := Symbol {
 			name = keyword,
 			type = .Keyword,
@@ -1437,12 +1449,13 @@ get_identifier_completion :: proc(
 			continue
 		}
 
-		if result.snippet.insert != "" && false {
+		if result.snippet.insert != "" {
 			item := CompletionItem {
 				label            = result.name,
 				insertText       = result.snippet.insert,
 				kind             = .Snippet,
 				detail           = result.snippet.detail,
+				documentation    = result.doc,
 				insertTextFormat = .Snippet,
 			}
 
@@ -1487,6 +1500,8 @@ get_identifier_completion :: proc(
 			append(&items, item)
 		}
 	}
+
+	append_non_imported_packages(ast_context, position_context, &items)
 
 	list.items = items[:]
 }
@@ -1630,15 +1645,11 @@ get_type_switch_completion :: proc(
 					}
 
 					if symbol.pkg == ast_context.document_package {
-						item.label = fmt.aprintf(
-							"%v%v",
-							common.repeat("^", symbol.pointers, context.temp_allocator),
-							name,
-						)
+						item.label = fmt.aprintf("%v%v", repeat("^", symbol.pointers, context.temp_allocator), name)
 					} else {
 						item.label = fmt.aprintf(
 							"%v%v.%v",
-							common.repeat("^", symbol.pointers, context.temp_allocator),
+							repeat("^", symbol.pointers, context.temp_allocator),
 							get_symbol_pkg_name(ast_context, symbol),
 							name,
 						)
@@ -1662,7 +1673,7 @@ get_core_insert_package_if_non_existent :: proc(ast_context: ^AstContext, pkg: s
 		}
 	}
 
-	strings.write_string(&builder, fmt.tprintf("import \"core:%v\"", pkg))
+	strings.write_string(&builder, fmt.tprintf("import \"core:%v\" \n", pkg))
 
 	return {
 			newText = strings.to_string(builder),
@@ -1684,6 +1695,60 @@ get_range_from_selection_start_to_dot :: proc(position_context: ^DocumentPositio
 	return {}, false
 }
 
+append_non_imported_packages :: proc(
+	ast_context: ^AstContext,
+	position_context: ^DocumentPositionContext,
+	items: ^[dynamic]CompletionItem,
+) {
+	if !common.config.enable_auto_import {
+		return
+	}
+
+	for collection, pkgs in build_cache.pkg_aliases {
+		//Right now only do it for core and builtin
+		if collection != "core" && collection != "base" {
+			continue
+		}
+		for pkg in pkgs {
+			fullpath := path.join({common.config.collections[collection], pkg})
+			found := false
+
+			for doc_pkg in ast_context.imports {
+				if fullpath == doc_pkg.name {
+					found = true
+				}
+			}
+
+			if !found {
+				pkg_decl := ast_context.file.pkg_decl
+
+				import_edit := TextEdit {
+					range = {
+						start = {line = pkg_decl.end.line + 1, character = 0},
+						end = {line = pkg_decl.end.line + 1, character = 0},
+					},
+					newText = fmt.tprintf("import \"%v:%v\"\n", collection, pkg),
+				}
+
+				additionalTextEdits := make([]TextEdit, 1, context.temp_allocator)
+				additionalTextEdits[0] = import_edit
+
+				item := CompletionItem {
+					label               = pkg,
+					kind                = .Module,
+					detail              = pkg,
+					insertText          = path.base(pkg),
+					additionalTextEdits = additionalTextEdits,
+					insertTextFormat    = .PlainText,
+					InsertTextMode      = .adjustIndentation,
+				}
+
+				append(items, item)
+			}
+		}
+	}
+}
+
 append_magic_map_completion :: proc(
 	position_context: ^DocumentPositionContext,
 	symbol: Symbol,
@@ -1693,6 +1758,16 @@ append_magic_map_completion :: proc(
 
 	if !ok {
 		return
+	}
+
+	// allocator
+	{
+		item := CompletionItem {
+			label  = "allocator",
+			kind   = .Field,
+			detail = fmt.tprintf("%v.%v: %v", "Raw_Map", "allocator", "runtime.Allocator"),
+		}
+		append(items, item)
 	}
 
 	remove_range := common.Range {
@@ -1707,7 +1782,14 @@ append_magic_map_completion :: proc(
 
 	additionalTextEdits := make([]TextEdit, 1, context.temp_allocator)
 	additionalTextEdits[0] = remove_edit
+
 	symbol_str := get_expression_string_from_position_context(position_context)
+	deref_suffix := ""
+	if symbol.pointers > 1 {
+		deref_suffix = repeat("^", symbol.pointers - 1, context.temp_allocator)
+	}
+	dereferenced_symbol_str := fmt.tprint(symbol_str, deref_suffix, sep = "")
+
 	//for
 	{
 		item := CompletionItem {
@@ -1716,7 +1798,81 @@ append_magic_map_completion :: proc(
 			detail = "for",
 			additionalTextEdits = additionalTextEdits,
 			textEdit = TextEdit {
-				newText = fmt.tprintf("for ${{1:k}}, ${{2:v}} in %v {{\n\t$0 \n}}", symbol_str),
+				newText = fmt.tprintf("for ${{1:k}}, ${{2:v}} in %v {{\n\t$0 \n}}", dereferenced_symbol_str),
+				range = {start = range.end, end = range.end},
+			},
+			insertTextFormat = .Snippet,
+			InsertTextMode = .adjustIndentation,
+		}
+
+		append(items, item)
+	}
+
+	//len
+	{
+		text := fmt.tprintf("len(%v)", dereferenced_symbol_str)
+
+		item := CompletionItem {
+			label = "len",
+			kind = .Function,
+			detail = "len",
+			textEdit = TextEdit{newText = text, range = {start = range.end, end = range.end}},
+			additionalTextEdits = additionalTextEdits,
+		}
+
+		append(items, item)
+	}
+
+	//cap
+	{
+		text := fmt.tprintf("cap(%v)", dereferenced_symbol_str)
+
+		item := CompletionItem {
+			label = "cap",
+			kind = .Function,
+			detail = "cap",
+			textEdit = TextEdit{newText = text, range = {start = range.end, end = range.end}},
+			additionalTextEdits = additionalTextEdits,
+		}
+
+		append(items, item)
+	}
+
+	prefix := "&"
+	suffix := ""
+	if symbol.pointers > 0 {
+		prefix = ""
+		suffix = repeat("^", symbol.pointers - 1, context.temp_allocator)
+	}
+	ptr_symbol_str := fmt.tprint(prefix, symbol_str, suffix, sep = "")
+
+	map_builtins_no_arg := []string{"clear", "shrink"}
+
+	for name in map_builtins_no_arg {
+		item := CompletionItem {
+			label = name,
+			kind = .Function,
+			detail = name,
+			textEdit = TextEdit {
+				newText = fmt.tprintf("%s(%v)", name, ptr_symbol_str),
+				range = {start = range.end, end = range.end},
+			},
+			additionalTextEdits = additionalTextEdits,
+		}
+
+		append(items, item)
+	}
+
+	map_builtins_with_args := []string{"delete_key", "reserve", "map_insert", "map_upsert", "map_entry"}
+
+	for name in map_builtins_with_args {
+		item := CompletionItem {
+			label = name,
+			kind = .Snippet,
+			detail = name,
+			additionalTextEdits = additionalTextEdits,
+			textEdit = TextEdit {
+				newText = fmt.tprintf("%s(%v, $0)", name, ptr_symbol_str),
 				range = {start = range.end, end = range.end},
 			},
 			insertTextFormat = .Snippet,
@@ -1729,15 +1885,26 @@ append_magic_map_completion :: proc(
 get_expression_string_from_position_context :: proc(position_context: ^DocumentPositionContext) -> string {
 	src := position_context.file.src
 	if position_context.call != nil {
-		return src[position_context.call.pos.offset:position_context.call.end.offset]
-	} else if position_context.field != nil {
+		if call_expr, ok := position_context.call.derived.(^ast.Call_Expr); ok {
+			if position_in_node(call_expr.expr, position_context.position) {
+				return src[position_context.call.pos.offset:position_context.call.end.offset]
+			}
+		}
+
+	}
+
+	if position_context.field != nil {
 		return src[position_context.field.pos.offset:position_context.field.end.offset]
-	} else if position_context.selector != nil {
+	}
+
+	if position_context.selector != nil {
 		return src[position_context.selector.pos.offset:position_context.selector.end.offset]
 	}
+
 	return ""
 }
-append_magic_dynamic_array_completion :: proc(
+
+append_magic_array_like_completion :: proc(
 	position_context: ^DocumentPositionContext,
 	symbol: Symbol,
 	items: ^[dynamic]CompletionItem,
@@ -1762,10 +1929,15 @@ append_magic_dynamic_array_completion :: proc(
 	additionalTextEdits[0] = remove_edit
 
 	symbol_str := get_expression_string_from_position_context(position_context)
+	deref_suffix := ""
+	if symbol.pointers > 1 {
+		deref_suffix = repeat("^", symbol.pointers - 1, context.temp_allocator)
+	}
+	dereferenced_symbol_str := fmt.tprint(symbol_str, deref_suffix, sep = "")
 
 	//len
 	{
-		text := fmt.tprintf("len(%v)", symbol_str)
+		text := fmt.tprintf("len(%v)", dereferenced_symbol_str)
 
 		item := CompletionItem {
 			label = "len",
@@ -1786,7 +1958,7 @@ append_magic_dynamic_array_completion :: proc(
 			detail = "for",
 			additionalTextEdits = additionalTextEdits,
 			textEdit = TextEdit {
-				newText = fmt.tprintf("for i in %v {{\n\t$0 \n}}", symbol_str),
+				newText = fmt.tprintf("for i in %v {{\n\t$0 \n}}", dereferenced_symbol_str),
 				range = {start = range.end, end = range.end},
 			},
 			insertTextFormat = .Snippet,
@@ -1801,22 +1973,48 @@ append_magic_dynamic_array_completion :: proc(
 		return
 	}
 
+	//cap
+	{
+		text := fmt.tprintf("cap(%v)", dereferenced_symbol_str)
+
+		item := CompletionItem {
+			label = "cap",
+			kind = .Function,
+			detail = "cap",
+			textEdit = TextEdit{newText = text, range = {start = range.end, end = range.end}},
+			additionalTextEdits = additionalTextEdits,
+		}
+
+		append(items, item)
+	}
+
+	// allocator
+	{
+		item := CompletionItem {
+			label  = "allocator",
+			kind   = .Field,
+			detail = fmt.tprintf("%v.%v: %v", "Raw_Dynamic_Array", "allocator", "runtime.Allocator"),
+		}
+		append(items, item)
+	}
+
 	prefix := "&"
 	suffix := ""
 	if symbol.pointers > 0 {
 		prefix = ""
-		suffix = common.repeat("^", symbol.pointers - 1, context.temp_allocator)
+		suffix = repeat("^", symbol.pointers - 1, context.temp_allocator)
 	}
 	ptr_symbol_str := fmt.tprint(prefix, symbol_str, suffix, sep = "")
 
-	//pop
-	{
+	dynamic_array_builtins_no_arg := []string{"pop", "pop_safe", "pop_front", "pop_front_safe", "clear"}
+
+	for name in dynamic_array_builtins_no_arg {
 		item := CompletionItem {
-			label = "pop",
+			label = name,
 			kind = .Function,
-			detail = "pop",
+			detail = name,
 			textEdit = TextEdit {
-				newText = fmt.tprintf("pop(%v)", ptr_symbol_str),
+				newText = fmt.tprintf("%s(%v)", name, ptr_symbol_str),
 				range = {start = range.end, end = range.end},
 			},
 			additionalTextEdits = additionalTextEdits,
@@ -1829,11 +2027,15 @@ append_magic_dynamic_array_completion :: proc(
 		"append",
 		"unordered_remove",
 		"ordered_remove",
+		"remove_range",
 		"resize",
 		"reserve",
 		"shrink",
 		"inject_at",
 		"assign_at",
+		"non_zero_append",
+		"non_zero_reserve",
+		"non_zero_resize",
 	}
 
 	for name in dynamic_array_builtins {

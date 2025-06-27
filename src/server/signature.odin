@@ -49,43 +49,61 @@ ParameterInformation :: struct {
 /*
 	Lazily build the signature and returns from ast.Nodes
 */
-build_procedure_symbol_signature :: proc(symbol: ^Symbol) {
+build_procedure_symbol_signature :: proc(symbol: ^Symbol, short_signature := true) {
 	if value, ok := symbol.value.(SymbolProcedureValue); ok {
 		builder := strings.builder_make(context.temp_allocator)
-
-		strings.write_string(&builder, "proc")
-		strings.write_string(&builder, "(")
-		for arg, i in value.orig_arg_types {
-			strings.write_string(&builder, common.node_to_string(arg))
-			if i != len(value.orig_arg_types) - 1 {
-				strings.write_string(&builder, ", ")
-			}
-		}
-		strings.write_string(&builder, ")")
-
-		if len(value.orig_return_types) != 0 {
-			strings.write_string(&builder, " -> ")
-
-			if len(value.orig_return_types) > 1 {
-				strings.write_string(&builder, "(")
-			}
-
-			for arg, i in value.orig_return_types {
-				strings.write_string(&builder, common.node_to_string(arg))
-				if i != len(value.orig_return_types) - 1 {
-					strings.write_string(&builder, ", ")
-				}
-			}
-
-			if len(value.orig_return_types) > 1 {
-				strings.write_string(&builder, ")")
-			}
-		} else if value.diverging {
-			strings.write_string(&builder, " -> !")
-		}
+		write_procedure_symbol_signature(&builder, &value)
 		symbol.signature = strings.to_string(builder)
 	} else if value, ok := symbol.value.(SymbolAggregateValue); ok {
-		symbol.signature = "proc"
+		if short_signature {
+			symbol.signature = "proc"
+			return
+		}
+
+		builder := strings.builder_make(context.temp_allocator)
+		strings.write_string(&builder, "proc {\n")
+		for symbol in value.symbols {
+			if value, ok := symbol.value.(SymbolProcedureValue); ok {
+				fmt.sbprintf(&builder, "\t%s :: ", symbol.name)
+				write_procedure_symbol_signature(&builder, &value)
+				strings.write_string(&builder, ",\n")
+			}
+		}
+		strings.write_string(&builder, "}")
+		symbol.signature = strings.to_string(builder)
+	}
+}
+
+write_procedure_symbol_signature :: proc(sb: ^strings.Builder, value: ^SymbolProcedureValue) {
+	strings.write_string(sb, "proc")
+	strings.write_string(sb, "(")
+	for arg, i in value.orig_arg_types {
+		strings.write_string(sb, node_to_string(arg))
+		if i != len(value.orig_arg_types) - 1 {
+			strings.write_string(sb, ", ")
+		}
+	}
+	strings.write_string(sb, ")")
+
+	if len(value.orig_return_types) != 0 {
+		strings.write_string(sb, " -> ")
+
+		if len(value.orig_return_types) > 1 {
+			strings.write_string(sb, "(")
+		}
+
+		for arg, i in value.orig_return_types {
+			strings.write_string(sb, node_to_string(arg))
+			if i != len(value.orig_return_types) - 1 {
+				strings.write_string(sb, ", ")
+			}
+		}
+
+		if len(value.orig_return_types) > 1 {
+			strings.write_string(sb, ")")
+		}
+	} else if value.diverging {
+		strings.write_string(sb, " -> !")
 	}
 }
 
@@ -124,10 +142,11 @@ get_signature_information :: proc(document: ^Document, position: common.Position
 	)
 
 	position_context, ok := get_document_position_context(document, position, .SignatureHelp)
-
 	if !ok {
+		log.warn("Failed to get position context")
 		return signature_help, true
 	}
+	ast_context.position_hint = position_context.hint
 
 	//TODO(should probably not be an ast.Expr, but ast.Call_Expr)
 	if position_context.call == nil {
@@ -173,7 +192,7 @@ get_signature_information :: proc(document: ^Document, position: common.Position
 				}
 			}
 
-			parameters[i].label = common.node_to_string(arg)
+			parameters[i].label = node_to_string(arg)
 		}
 
 		build_procedure_symbol_signature(&call)
@@ -199,7 +218,7 @@ get_signature_information :: proc(document: ^Document, position: common.Position
 						}
 					}
 
-					parameters[i].label = common.node_to_string(arg)
+					parameters[i].label = node_to_string(arg)
 				}
 
 				build_procedure_symbol_signature(&symbol)

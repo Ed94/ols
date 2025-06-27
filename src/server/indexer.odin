@@ -1,17 +1,19 @@
 package server
 
-import "core:odin/ast"
 import "core:fmt"
-import "core:strings"
 import "core:log"
+import "core:odin/ast"
 import "core:slice"
+import "core:strings"
 
 
 Indexer :: struct {
 	builtin_packages: [dynamic]string,
+	runtime_package:  string,
 	index:            MemoryIndex,
 }
 
+@(thread_local)
 indexer: Indexer
 
 FuzzyResult :: struct {
@@ -23,14 +25,7 @@ clear_index_cache :: proc() {
 	memory_index_clear_cache(&indexer.index)
 }
 
-lookup :: proc(
-	name: string,
-	pkg: string,
-	loc := #caller_location,
-) -> (
-	Symbol,
-	bool,
-) {
+lookup :: proc(name: string, pkg: string, loc := #caller_location) -> (Symbol, bool) {
 	if name == "" {
 		return {}, false
 	}

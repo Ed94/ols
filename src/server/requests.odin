@@ -1,3 +1,4 @@
+#+feature dynamic-literals
 package server
 
 import "base:intrinsics"
@@ -26,27 +27,6 @@ Header :: struct {
 	content_type:   string,
 }
 
-RequestType :: enum {
-	Initialize,
-	Initialized,
-	Shutdown,
-	Exit,
-	DidOpen,
-	DidChange,
-	DidClose,
-	DidSave,
-	Definition,
-	Completion,
-	SignatureHelp,
-	DocumentSymbol,
-	SemanticTokensFull,
-	SemanticTokensRange,
-	FormatDocument,
-	Hover,
-	CancelRequest,
-	InlayHint,
-}
-
 RequestInfo :: struct {
 	root:     json.Value,
 	params:   json.Value,
@@ -56,7 +36,6 @@ RequestInfo :: struct {
 	writer:   ^Writer,
 	result:   common.Error,
 }
-
 
 make_response_message :: proc(id: RequestId, params: ResponseParams) -> ResponseMessage {
 	return ResponseMessage{jsonrpc = "2.0", id = id, result = params}
@@ -121,6 +100,11 @@ thread_request_main :: proc(data: rawptr) {
 			#partial switch v in id_value {
 			case json.String:
 				id = v
+				//Hack to support dynamic registering without changing too much
+				if v == "REGISTER_DYNAMIC_CAPABILITIES" {
+					json.destroy_value(root)
+					continue
+				}
 			case json.Integer:
 				id = v
 			case:
@@ -244,6 +228,7 @@ call_map: map[string]proc(_: json.Value, _: RequestId, _: ^common.Config, _: ^Wr
 	"textDocument/didClose"             = notification_did_close,
 	"textDocument/didSave"              = notification_did_save,
 	"textDocument/definition"           = request_definition,
+	"textDocument/typeDefinition"       = request_type_definition,
 	"textDocument/completion"           = request_completion,
 	"textDocument/signatureHelp"        = request_signature_help,
 	"textDocument/documentSymbol"       = request_document_symbols,
@@ -259,15 +244,17 @@ call_map: map[string]proc(_: json.Value, _: RequestId, _: ^common.Config, _: ^Wr
 	"window/progress"                   = request_noop,
 	"workspace/symbol"                  = request_workspace_symbols,
 	"workspace/didChangeConfiguration"  = notification_workspace_did_change_configuration,
+	"workspace/didChangeWatchedFiles"   = notification_did_change_watched_files,
 }
 
 notification_map: map[string]bool = {
-	"textDocument/didOpen"   = true,
-	"textDocument/didChange" = true,
-	"textDocument/didClose"  = true,
-	"textDocument/didSave"   = true,
-	"initialized"            = true,
-	"window/progress"        = true,
+	"textDocument/didOpen"            = true,
+	"textDocument/didChange"          = true,
+	"textDocument/didClose"           = true,
+	"textDocument/didSave"            = true,
+	"initialized"                     = true,
+	"window/progress"                 = true,
+	"workspace/didChangeWatchedFiles" = true,
 }
 
 consume_requests :: proc(config: ^common.Config, writer: ^Writer) -> bool {
@@ -336,7 +323,15 @@ cancel :: proc(value: json.Value, id: RequestId, writer: ^Writer, config: ^commo
 
 call :: proc(value: json.Value, id: RequestId, writer: ^Writer, config: ^common.Config) {
 	root := value.(json.Object)
-	method := root["method"].(json.String)
+
+	method, ok := root["method"].(json.String)
+
+	if !ok {
+		log.errorf("Failed to find method: %#v", root)
+		response := make_response_message_error(id = id, error = ResponseError{code = .MethodNotFound, message = ""})
+		send_error(response, writer)
+		return
+	}
 
 	diff: time.Duration
 	{
@@ -379,6 +374,8 @@ read_ols_initialize_options :: proc(config: ^common.Config, ols_config: OlsConfi
 	config.enable_procedure_snippet =
 		ols_config.enable_procedure_snippet.(bool) or_else config.enable_procedure_snippet
 
+	config.enable_auto_import = ols_config.enable_auto_import.(bool) or_else config.enable_auto_import
+
 	config.enable_checker_only_saved =
 		ols_config.enable_checker_only_saved.(bool) or_else config.enable_checker_only_saved
 
@@ -399,15 +396,13 @@ read_ols_initialize_options :: proc(config: ^common.Config, ols_config: OlsConfi
 	for profile in ols_config.profiles {
 		if ols_config.profile == profile.name {
 			config.profile.checker_path = make([dynamic]string, len(profile.checker_path))
+			config.profile.exclude_path = make([dynamic]string, len(profile.exclude_path))
 
-			if filepath.is_abs(ols_config.profile) {
-				for checker_path, i in profile.checker_path {
-					config.profile.checker_path[i] = strings.clone(checker_path)
-				}
-			} else {
-				for checker_path, i in profile.checker_path {
-					config.profile.checker_path[i] = path.join(elems = {uri.path, checker_path})
-				}
+			for checker_path, i in profile.checker_path {
+				config.profile.checker_path[i] = path.join(elems = {uri.path, checker_path})
+			}
+			for exclude_path, i in profile.exclude_path {
+				config.profile.exclude_path[i] = path.join(elems = {uri.path, exclude_path})
 			}
 
 			config.profile.os = strings.clone(profile.os)
@@ -418,6 +413,10 @@ read_ols_initialize_options :: proc(config: ^common.Config, ols_config: OlsConfi
 
 	if config.profile.os == "" {
 		config.profile.os = os_enum_to_string[ODIN_OS]
+	}
+
+	if config.profile.arch == "" {
+		config.profile.arch = fmt.aprint(ODIN_ARCH)
 	}
 
 	config.checker_targets = slice.clone(ols_config.checker_targets, context.allocator)
@@ -485,6 +484,15 @@ read_ols_initialize_options :: proc(config: ^common.Config, ols_config: OlsConfi
 	odin_core_env: string
 	odin_bin := "odin" if config.odin_command == "" else config.odin_command
 
+	// If we don't have an absolute path
+	if !filepath.is_abs(odin_bin) {
+		// Join with the project path
+		tmp_path := path.join(elems = {uri.path, odin_bin})
+		if os.exists(tmp_path) {
+			odin_bin = tmp_path
+		}
+	}
+
 	root_buf: [1024]byte
 	root_slice := root_buf[:]
 	root_command := strings.concatenate({odin_bin, " root"}, context.temp_allocator)
@@ -498,7 +506,7 @@ read_ols_initialize_options :: proc(config: ^common.Config, ols_config: OlsConfi
 
 		odin_core_env = os.get_env("ODIN_ROOT", context.temp_allocator)
 		if odin_core_env == "" {
-			if filepath.is_abs(odin_bin) {
+			if os.exists(odin_bin) {
 				odin_core_env = filepath.dir(odin_bin, context.temp_allocator)
 			} else if exe_path, ok := common.lookup_in_path(odin_bin); ok {
 				odin_core_env = filepath.dir(exe_path, context.temp_allocator)
@@ -601,6 +609,7 @@ request_initialize :: proc(
 	config.enable_fake_method = false
 	config.enable_procedure_snippet = true
 	config.enable_checker_only_saved = true
+	config.enable_auto_import = true
 
 	read_ols_config :: proc(file: string, config: ^common.Config, uri: common.Uri) {
 		if data, ok := os.read_entire_file(file, context.temp_allocator); ok {
@@ -642,6 +651,8 @@ request_initialize :: proc(
 		read_ols_config(ols_config_path, config, uri)
 
 		read_ols_initialize_options(config, initialize_params.initializationOptions, uri)
+	} else {
+		read_ols_initialize_options(config, initialize_params.initializationOptions, {})
 	}
 
 
@@ -677,6 +688,7 @@ request_initialize :: proc(
 				workspaceSymbolProvider = true,
 				referencesProvider = config.enable_references,
 				definitionProvider = true,
+				typeDefinitionProvider = true,
 				completionProvider = CompletionOptions {
 					resolveProvider = false,
 					triggerCharacters = completionTriggerCharacters,
@@ -710,8 +722,9 @@ request_initialize :: proc(
 		Add runtime package
 	*/
 
-	if core, ok := config.collections["base"]; ok {
-		append(&indexer.builtin_packages, path.join({core, "runtime"}))
+	if base, ok := config.collections["base"]; ok {
+		indexer.runtime_package = path.join({base, "runtime"})
+		append(&indexer.builtin_packages, indexer.runtime_package)
 	}
 
 	file_resolve_cache.files = make(map[string]FileResolve, 200)
@@ -722,7 +735,36 @@ request_initialize :: proc(
 		try_build_package(pkg)
 	}
 
+	if initialize_params.capabilities.workspace.didChangeWatchedFiles.dynamicRegistration {
+		register_dynamic_capabilities(writer)
+	}
+
+	find_all_package_aliases()
+
 	return .None
+}
+
+register_dynamic_capabilities :: proc(writer: ^Writer) {
+	params: RegistrationParams
+
+	registration: Registration
+
+	registration.id = "GLOBAL_ODIN_FILES"
+	registration.method = "workspace/didChangeWatchedFiles"
+	registration.registerOptions = DidChangeWatchedFilesRegistrationOptions {
+		watchers = []FileSystemWatcher{{globPattern = "**/*.odin"}},
+	}
+
+	params.registrations = {registration}
+
+	request_message := RequestMessage {
+		jsonrpc = "2.0",
+		method  = "client/registerCapability",
+		params  = params,
+		id      = "REGISTER_DYNAMIC_CAPABILITIES",
+	}
+
+	send_request(request_message, writer)
 }
 
 request_initialized :: proc(
@@ -770,6 +812,46 @@ request_definition :: proc(
 
 	if !ok2 {
 		log.warn("Failed to get definition location")
+	}
+
+	if len(locations) == 1 {
+		response := make_response_message(params = locations[0], id = id)
+		send_response(response, writer)
+	} else {
+		response := make_response_message(params = locations, id = id)
+		send_response(response, writer)
+	}
+
+	return .None
+}
+
+request_type_definition :: proc(
+	params: json.Value,
+	id: RequestId,
+	config: ^common.Config,
+	writer: ^Writer,
+) -> common.Error {
+	params_object, ok := params.(json.Object)
+
+	if !ok {
+		return .ParseError
+	}
+
+	definition_params: TextDocumentPositionParams
+
+	if unmarshal(params, definition_params, context.temp_allocator) != nil {
+		return .ParseError
+	}
+
+	document := document_get(definition_params.textDocument.uri)
+
+	if document == nil {
+		return .InternalError
+	}
+
+	locations, ok2 := get_type_definition_locations(document, definition_params.position)
+	if !ok2 {
+		log.warn("Failed to get type definition location")
 	}
 
 	if len(locations) == 1 {
@@ -1013,68 +1095,18 @@ notification_did_save :: proc(
 		return .ParseError
 	}
 
-	fullpath := uri.path
-
-	p := parser.Parser {
-		err   = log_error_handler,
-		warn  = log_warning_handler,
-		flags = {.Optional_Semicolons},
+	if result := index_file(uri, save_params.text); result != .None {
+		return result
 	}
+
+	fullpath := uri.path
 
 	when ODIN_OS == .Windows {
 		correct := common.get_case_sensitive_path(fullpath, context.temp_allocator)
 		fullpath, _ = filepath.to_slash(correct, context.temp_allocator)
 	}
 
-	dir := filepath.base(filepath.dir(fullpath, context.temp_allocator))
-
-	pkg := new(ast.Package)
-	pkg.kind = .Normal
-	pkg.fullpath = fullpath
-	pkg.name = dir
-
-	if dir == "runtime" {
-		pkg.kind = .Runtime
-	}
-
-	file := ast.File {
-		fullpath = fullpath,
-		src      = save_params.text,
-		pkg      = pkg,
-	}
-
-	ok = parser.parse_file(&p, &file)
-
-	if !ok {
-		if !strings.contains(fullpath, "builtin.odin") && !strings.contains(fullpath, "intrinsics.odin") {
-			log.errorf("error in parse file for indexing %v", fullpath)
-		}
-	}
-
 	corrected_uri := common.create_uri(fullpath, context.temp_allocator)
-
-	for k, &v in indexer.index.collection.packages {
-		for k2, v2 in v.symbols {
-			if corrected_uri.uri == v2.uri {
-				free_symbol(v2, indexer.index.collection.allocator)
-				delete_key(&v.symbols, k2)
-			}
-		}
-
-		for method, &symbols in v.methods {
-			for i := 0; i < len(symbols); i += 1 {
-				#no_bounds_check symbol := symbols[i]
-				if corrected_uri.uri == symbol.uri {
-					unordered_remove(&symbols, i)
-					i -= 1
-				}
-			}
-		}
-	}
-
-	if ret := collect_symbols(&indexer.index.collection, file, corrected_uri.uri); ret != .None {
-		log.errorf("failed to collect symbols on save %v", ret)
-	}
 
 	check(config.profile.checker_path[:], corrected_uri, writer, config)
 
@@ -1424,6 +1456,49 @@ request_references :: proc(
 	response := make_response_message(params = locations, id = id)
 
 	send_response(response, writer)
+
+	return .None
+}
+
+notification_did_change_watched_files :: proc(
+	params: json.Value,
+	id: RequestId,
+	config: ^common.Config,
+	writer: ^Writer,
+) -> common.Error {
+	params_object, ok := params.(json.Object)
+
+	if !ok {
+		return .ParseError
+	}
+
+	did_change_watched_files_params: DidChangeWatchedFilesParams
+
+	if unmarshal(params, did_change_watched_files_params, context.temp_allocator) != nil {
+		return .ParseError
+	}
+
+	for change in did_change_watched_files_params.changes {
+		if change.type == cast(int)FileChangeType.Deleted {
+			if uri, ok := common.parse_uri(change.uri, context.temp_allocator); ok {
+				remove_index_file(uri)
+			}
+			clear_all_package_aliases()
+			find_all_package_aliases()
+		} else {
+			if uri, ok := common.parse_uri(change.uri, context.temp_allocator); ok {
+				if data, ok := os.read_entire_file(uri.path); ok {
+					index_file(uri, cast(string)data)
+				}
+			}
+			if change.type == cast(int)FileChangeType.Created {
+				clear_all_package_aliases()
+				find_all_package_aliases()
+			}
+		}
+
+
+	}
 
 	return .None
 }

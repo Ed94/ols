@@ -2,9 +2,11 @@ package common
 
 ConfigProfile :: struct {
 	os:           string,
+	arch:         string,
 	name:         string,
 	checker_path: [dynamic]string,
 	defines:      map[string]string,
+	exclude_path: [dynamic]string,
 }
 
 Config :: struct {
@@ -32,6 +34,7 @@ Config :: struct {
 	enable_fake_method:                bool,
 	enable_procedure_snippet:          bool,
 	enable_checker_only_saved:         bool,
+	enable_auto_import:                bool,
 	disable_parser_errors:             bool,
 	thread_count:                      int,
 	file_log:                          bool,

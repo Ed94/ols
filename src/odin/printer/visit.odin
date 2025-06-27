@@ -243,7 +243,13 @@ visit_decl :: proc(p: ^Printer, decl: ^ast.Decl, called_in_stmt := false) -> ^Do
 			}
 			document = cons(document, text("}"))
 		} else if len(v.fullpaths) == 1 {
-			document = cons_with_nopl(document, visit_expr(p, v.fullpaths[0]))
+			if _, ok := v.fullpaths[0].derived_expr.(^ast.Basic_Lit); ok {
+				document = cons_with_nopl(document, visit_expr(p, v.fullpaths[0]))
+			} else {
+				document = cons_with_nopl(document, text("{"))
+				document = cons(document, visit_expr(p, v.fullpaths[0]))
+				document = cons(document, text("}"))
+			}
 		}
 
 		return document
@@ -304,7 +310,7 @@ visit_decl :: proc(p: ^Printer, decl: ^ast.Decl, called_in_stmt := false) -> ^Do
 		lhs = cons(lhs, visit_exprs(p, v.names, {.Add_Comma, .Glue}))
 
 		if v.type != nil {
-			lhs = cons(lhs, text(":"))
+			lhs = cons(lhs, text(" :" if p.config.spaces_around_colons else ":"))
 			lhs = cons_with_nopl(lhs, visit_expr(p, v.type))
 		} else {
 			if !v.is_mutable {
@@ -323,7 +329,13 @@ visit_decl :: proc(p: ^Printer, decl: ^ast.Decl, called_in_stmt := false) -> ^Do
 
 			rhs = cons_with_nopl(rhs, visit_exprs(p, v.values, {.Add_Comma}, .Value_Decl))
 		} else if len(v.values) > 0 && v.type != nil {
-			rhs = cons_with_nopl(rhs, cons_with_nopl(text(":"), visit_exprs(p, v.values, {.Add_Comma})))
+			rhs = cons_with_nopl(
+				rhs,
+				cons_with_nopl(
+					text(" :" if p.config.spaces_around_colons else ":"),
+					visit_exprs(p, v.values, {.Add_Comma}),
+				),
+			)
 		} else {
 			rhs = cons_with_nopl(rhs, visit_exprs(p, v.values, {.Add_Comma}, .Value_Decl))
 		}
@@ -933,10 +945,6 @@ visit_stmt :: proc(
 			document = cons(document, visit_expr(p, v.label), text(":"), break_with_space())
 		}
 
-		if .Bounds_Check in v.state_flags {
-			document = cons(document, text("#bounds_check"), break_with_space())
-		}
-
 		if !uses_do {
 			document = cons(document, visit_begin_brace(p, v.pos, block_type))
 		} else {
@@ -1042,7 +1050,9 @@ visit_stmt :: proc(
 		}
 
 		document = cons_with_opl(document, visit_expr(p, v.cond))
+		set_source_position(p, v.body.pos)
 		document = cons_with_nopl(document, visit_stmt(p, v.body, .Switch_Stmt))
+		set_source_position(p, v.body.end)
 	case ^Case_Clause:
 		document = cons(document, text("case"))
 
@@ -1508,6 +1518,11 @@ visit_expr :: proc(
 			document = cons_with_opl(document, text("#shared_nil"))
 		}
 
+		if v.align != nil {
+			document = cons_with_nopl(document, text("#align"))
+			document = cons(document, visit_expr(p, v.align))
+		}
+
 		document = cons_with_nopl(document, visit_where_clauses(p, v.where_clauses))
 
 		if len(v.variants) == 0 {
@@ -1560,7 +1575,16 @@ visit_expr :: proc(
 	case ^Struct_Type:
 		document = text_position(p, "struct", v.pos)
 
-		document = cons(document, visit_poly_params(p, v.poly_params))
+		if v.poly_params != nil {
+			document = cons(document, text("("))
+			document = cons(
+				document,
+				nest(cons(break_with(""), visit_signature_list(p, v.poly_params, false, false, options))),
+			)
+			document = cons(document, break_with(""), text(")"))
+		} else {
+			document = cons(document, empty())
+		}
 
 		if v.is_packed {
 			document = cons_with_nopl(document, text("#packed"))
@@ -1581,19 +1605,27 @@ visit_expr :: proc(
 
 		if v.max_field_align != nil {
 			document = cons_with_nopl(document, text("#max_field_align"))
-			document = cons_with_nopl(document, visit_expr(p, v.max_field_align))
+			document = cons(document, visit_expr(p, v.max_field_align))
 		}
 
 		if v.min_field_align != nil {
 			document = cons_with_nopl(document, text("#min_field_align"))
-			document = cons_with_nopl(document, visit_expr(p, v.min_field_align))
+			document = cons(document, visit_expr(p, v.min_field_align))
 		}
 
 		document = cons_with_nopl(document, visit_where_clauses(p, v.where_clauses))
 
+
 		if v.fields != nil && len(v.fields.list) == 0 {
+
 			document = cons_with_nopl(document, text("{"))
-			document = cons(document, visit_struct_field_list(p, v.fields, {.Add_Comma}), text("}"))
+
+			if contains_comments_in_range(p, v.pos, v.end) {
+				comments, _ := visit_comments(p, v.end)
+				document = cons(document, nest(comments), newline(1), text("}"))
+			} else {
+				document = cons(document, visit_struct_field_list(p, v.fields, {.Add_Comma}), text("}"))
+			}
 		} else if v.fields != nil {
 			document = cons(document, break_with_space(), visit_begin_brace(p, v.pos, .Generic))
 
@@ -1603,7 +1635,7 @@ visit_expr :: proc(
 				nest(
 					cons(
 						newline_position(p, 1, v.fields.open),
-						visit_struct_field_list(p, v.fields, {.Add_Comma, .Trailing, .Enforce_Newline}),
+						group(visit_struct_field_list(p, v.fields, {.Add_Comma, .Trailing, .Enforce_Newline})),
 					),
 				),
 			)
@@ -1648,7 +1680,7 @@ visit_expr :: proc(
 			document = cons(document, text("#force_no_inline"))
 		}
 
-		document = cons_with_nopl(document, visit_proc_type(p, v.type^, v.body != nil))
+		document = cons_with_nopl(document, visit_proc_type(p, v.type^, v.body != nil, len(v.where_clauses) > 0))
 
 		document = cons_with_nopl(document, visit_where_clauses(p, v.where_clauses))
 
@@ -1663,7 +1695,7 @@ visit_expr :: proc(
 			document = cons_with_nopl(document, text("---"))
 		}
 	case ^Proc_Type:
-		document = group(visit_proc_type(p, v^, false))
+		document = group(visit_proc_type(p, v^, false, false))
 	case ^Basic_Lit:
 		document = text_token(p, v.tok)
 	case ^Binary_Expr:
@@ -1786,19 +1818,16 @@ visit_expr :: proc(
 
 		if should_newline {
 			document = cons_with_nopl(document, visit_begin_brace(p, v.pos, .Comp_Lit))
-			set_source_position(p, v.open)
-			document = cons(
-				document,
-				nest(
-					cons(
-						newline_position(p, 1, v.elems[0].pos),
-						visit_comp_lit_exprs(p, v^, {.Add_Comma, .Trailing, .Enforce_Newline}),
-					),
-				),
-			)
-			set_source_position(p, v.end)
-
-			document = cons(document, newline(1), text_position(p, "}", v.end))
+			inner_document := empty()
+			if len(v.elems) > 0 {
+				inner_document = cons(
+					newline_position(p, 1, v.elems[0].pos),
+					visit_comp_lit_exprs(p, v^, {.Add_Comma, .Trailing, .Enforce_Newline}),
+				)
+			} else {
+				inner_document, _ = visit_comments(p, v.end)
+			}
+			document = cons(document, nest(inner_document), newline(1), text_position(p, "}", v.end))
 		} else {
 			break_string := " " if v.type != nil else ""
 			document = cons(
@@ -1900,6 +1929,11 @@ visit_matrix_comp_lit :: proc(p: ^Printer, comp_lit: ^ast.Comp_Lit, matrix_type:
 	//these values have already been validated
 	row_count, _ := strconv.parse_int(matrix_type.row_count.derived.(^ast.Basic_Lit).tok.text)
 	column_count, _ := strconv.parse_int(matrix_type.column_count.derived.(^ast.Basic_Lit).tok.text)
+
+	if row_count * column_count > len(comp_lit.elems) {
+		p.errored_out = true
+		return document
+	}
 
 	for row := 0; row < row_count; row += 1 {
 		for column := 0; column < column_count; column += 1 {
@@ -2032,7 +2066,7 @@ visit_struct_field_list :: proc(p: ^Printer, list: ^ast.Field_List, options := L
 
 		if field.type != nil {
 			if len(field.names) != 0 {
-				document = cons(document, text(":"), align)
+				document = cons(document, text(" :" if p.config.spaces_around_colons else ":"), align)
 			}
 			document = cons_with_opl(document, visit_expr(p, field.type))
 		} else {
@@ -2083,7 +2117,12 @@ visit_proc_tags :: proc(p: ^Printer, proc_tags: ast.Proc_Tags) -> ^Document {
 }
 
 @(private)
-visit_proc_type :: proc(p: ^Printer, proc_type: ast.Proc_Type, contains_body: bool) -> ^Document {
+visit_proc_type :: proc(
+	p: ^Printer,
+	proc_type: ast.Proc_Type,
+	contains_body: bool,
+	contains_where_clauses: bool,
+) -> ^Document {
 	document := text("proc")
 
 	explicit_calling := false
@@ -2132,6 +2171,14 @@ visit_proc_type :: proc(p: ^Printer, proc_type: ast.Proc_Type, contains_body: bo
 					if ident.name != "_" {
 						use_parens = true
 					}
+				}
+			}
+		}
+
+		if contains_where_clauses {
+			if len(proc_type.results.list) == 1 {
+				if _, ok := proc_type.results.list[0].type.derived.(^ast.Proc_Type); ok {
+					use_parens = true
 				}
 			}
 		}
@@ -2337,7 +2384,7 @@ visit_signature_field :: proc(p: ^Printer, field: ^ast.Field, remove_blank := tr
 		document = cons(document, cons_with_nopl(flag, visit_exprs(p, field.names, {.Add_Comma})))
 
 		if len(field.names) != 0 && field.type != nil {
-			document = cons(document, text(":"), break_with_no_newline())
+			document = cons(document, text(" :" if p.config.spaces_around_colons else ":"), break_with_no_newline())
 		}
 	}
 
