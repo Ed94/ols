@@ -227,6 +227,119 @@ try_build_package :: proc(pkg_name: string) {
 	}
 }
 
+try_build_package_debug :: proc(pkg_name: string) {
+	log.errorf("=== try_build_package called for: %v ===", pkg_name)
+	
+	if pkg, ok := build_cache.loaded_pkgs[pkg_name]; ok {
+		log.errorf("Package already loaded: %v (timestamp: %v)", pkg_name, pkg.timestamp)
+		return
+	}
+
+	log.errorf("Building new package: %v", pkg_name)
+
+	monolithic_file_path := path.join({pkg_name, ".ODIN_MONOLITHIC_PACKAGE"}, context.temp_allocator)
+	is_monolithic := os.exists(monolithic_file_path)
+	
+	if is_monolithic {
+		log.errorf("  -> Monolithic package detected")
+	} else {
+		log.errorf("  -> Regular package")
+	}
+
+	matches, err := get_package_files(pkg_name, context.temp_allocator)
+	if err != os.General_Error.None {
+		log.errorf("Failed to get package files for %v: %v", pkg_name, err)
+		return
+	}
+
+	log.errorf("  -> Found %d files to index", len(matches))
+	
+	if len(matches) == 0 {
+		log.errorf("  -> No files found for package: %v", pkg_name)
+		return
+	}
+
+	// Log the files being indexed
+	for file, i in matches {
+		log.debugf("  -> File %d: %v", i+1, file)
+	}
+
+	// Continue with existing build logic...
+	arena: runtime.Arena
+	result := runtime.arena_init(&arena, mem.Megabyte * 40, runtime.default_allocator())
+	defer runtime.arena_destroy(&arena)
+
+	symbols_collected := 0
+
+	{
+		context.allocator = runtime.arena_allocator(&arena)
+
+		for fullpath in matches {
+			if skip_file(filepath.base(fullpath)) {
+				log.debugf("  -> Skipping file: %v", fullpath)
+				continue
+			}
+
+			data, ok := os.read_entire_file(fullpath, context.allocator)
+
+			if !ok {
+				log.errorf("Failed to read file for indexing: %v", fullpath)
+				continue
+			}
+
+			p := parser.Parser {
+				err   = log_error_handler,
+				warn  = log_warning_handler,
+				flags = {.Optional_Semicolons},
+			}
+
+			dir := filepath.base(filepath.dir(fullpath, context.allocator))
+
+			pkg := new(ast.Package)
+			pkg.kind = .Normal
+			pkg.fullpath = fullpath
+			pkg.name = dir
+
+			if dir == "runtime" {
+				pkg.kind = .Runtime
+			}
+
+			file := ast.File {
+				fullpath = fullpath,
+				src      = string(data),
+				pkg      = pkg,
+			}
+
+			ok = parser.parse_file(&p, &file)
+
+			if !ok {
+				if !strings.contains(fullpath, "builtin.odin") && !strings.contains(fullpath, "intrinsics.odin") {
+					log.errorf("Parse error in file: %v", fullpath)
+				}
+				continue
+			}
+
+			uri := common.create_uri(fullpath, context.allocator)
+
+			if ret := collect_symbols(&indexer.index.collection, file, uri.uri); ret == .None {
+				symbols_collected += 1
+				log.debugf("  -> Successfully indexed file: %v", fullpath)
+			} else {
+				log.errorf("Failed to collect symbols from file: %v (error: %v)", fullpath, ret)
+			}
+
+			runtime.arena_free_all(&arena)
+		}
+	}
+
+	build_cache.loaded_pkgs[strings.clone(pkg_name, indexer.index.collection.allocator)] = PackageCacheInfo {
+		timestamp = time.now(),
+	}
+	
+	log.errorf("Package indexing complete: %v", pkg_name)
+	log.errorf("  -> Files processed: %d/%d", symbols_collected, len(matches))
+	log.errorf("  -> Package cached with timestamp: %v", time.now())
+}
 
 remove_index_file :: proc(uri: common.Uri) -> common.Error {
 	ok: bool
@@ -342,7 +455,7 @@ setup_index :: proc() {
 		log.errorf("Failed to find the builtin folder at %v", builtin_path)
 	}
 
-	try_build_package(builtin_path)
+	try_build_package_debug(builtin_path)
 }
 
 free_index :: proc() {

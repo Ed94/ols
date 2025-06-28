@@ -1157,7 +1157,7 @@ resolve_selector_expression :: proc(ast_context: ^AstContext, node: ^ast.Selecto
 				}
 			}
 		case SymbolPackageValue:
-			try_build_package(ast_context.current_package)
+			try_build_package_debug(ast_context.current_package)
 
 			if node.field != nil {
 				return resolve_symbol_return(ast_context, lookup(node.field.name, selector.pkg))
@@ -1445,7 +1445,7 @@ internal_resolve_type_identifier :: proc(ast_context: ^AstContext, node: ast.Ide
 				value = SymbolPackageValue{},
 			}
 
-			try_build_package(symbol.pkg)
+			try_build_package_debug(symbol.pkg)
 
 			return symbol, true
 		}
@@ -1588,7 +1588,7 @@ internal_resolve_type_identifier :: proc(ast_context: ^AstContext, node: ast.Ide
 				value = SymbolPackageValue{},
 			}
 
-			try_build_package(symbol.pkg)
+			try_build_package_debug(symbol.pkg)
 
 			return symbol, true
 		}

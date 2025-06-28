@@ -13,106 +13,149 @@ dir_blacklist :: []string{"node_modules", ".git"}
 
 @(private)
 walk_dir :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (err: os.Error, skip_dir: bool) {
-	pkgs := cast(^[dynamic]string)user_data
+	data := cast(^WalkData)user_data
 
 	if info.is_dir {
 		dir, _ := filepath.to_slash(info.fullpath, context.temp_allocator)
 		dir_name := filepath.base(dir)
 
-		when (false) {
+		// Check blacklist
 		for blacklist in dir_blacklist {
 			if blacklist == dir_name {
 				return nil, true
 			}
 		}
-		append(pkgs, dir)
-		}
-        for blacklist in dir_blacklist {
-            if blacklist == dir_name {
-                return nil, true
-            }
-        }
-        append(pkgs, dir)
 
+		// Check for monolithic package
 		monolithic_path := filepath.join({dir, ".ODIN_MONOLITHIC_PACKAGE"}, context.temp_allocator)
 		if os.exists(monolithic_path) {
-			// It's a monolithic package, so we've added it and now we skip its subdirectories.
-			return nil, true 
+			append(data.packages, dir)
+			append(data.monolithic_roots, strings.clone(dir, context.temp_allocator))
+			// Skip subdirectories - they're all part of this monolithic package
+			return nil, true
 		}
+		
+		// If not monolithic, treat as regular package
+		append(data.packages, dir)
 	}
 
 	return nil, false
 }
 
+// Context for tracking traversal progress
+WalkTrackingContext :: struct {
+    packages: ^[dynamic]string,
+    monolithic_packages: [dynamic]string,
+    total_dirs_visited: int,
+    monolithic_count: int,
+    workspace_root: string,
+}
+
+@(private)
+walk_dir_with_tracking :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (err: os.Error, skip_dir: bool) {
+    context_data := cast(^WalkTrackingContext)user_data
+    
+    if info.is_dir {
+        dir, _ := filepath.to_slash(info.fullpath, context.temp_allocator)
+        dir_name := filepath.base(dir)
+        
+        context_data.total_dirs_visited += 1
+
+        // Skip blacklisted directories
+        for blacklist in dir_blacklist {
+            if blacklist == dir_name {
+                log.debugf("Skipping blacklisted directory: %v", dir)
+                return nil, true
+            }
+        }
+        
+        // Add to packages list
+        append(context_data.packages, dir)
+
+        // Check for monolithic package
+        monolithic_path := filepath.join({dir, ".ODIN_MONOLITHIC_PACKAGE"}, context.temp_allocator)
+        if os.exists(monolithic_path) {
+            // Record the monolithic package
+            append(&context_data.monolithic_packages, strings.clone(dir))
+            context_data.monolithic_count += 1
+            
+            log.infof("Monolithic package #%d found at: %v (visited %d dirs total)", 
+                      context_data.monolithic_count, dir, context_data.total_dirs_visited)
+            
+            // Skip this directory's children but continue with siblings/other branches
+            return nil, true // This tells filepath.walk to skip subdirectories of THIS directory only
+        }
+
+        // Regular directory, continue traversing its subdirectories
+        return nil, false
+    }
+
+    return nil, false
+}
+
+
+WalkData :: struct {
+	packages: ^[dynamic]string,
+	monolithic_roots: ^[dynamic]string,
+}
+
+
+// Modified get_workspace_symbols with better tracking
 get_workspace_symbols :: proc(query: string) -> (workspace_symbols: []WorkspaceSymbol, ok: bool) {
 	workspace := common.config.workspace_folders[0]
 	uri       := common.parse_uri(workspace.uri, context.temp_allocator) or_return
 	pkgs      := make([dynamic]string, 0, context.temp_allocator)
+	monolithic_roots := make([dynamic]string, 0, context.temp_allocator)
 	symbols   := make([dynamic]WorkspaceSymbol, 0, 100, context.temp_allocator)
 
-	filepath.walk(uri.path, walk_dir, &pkgs)
-	log.error(pkgs)
-
-	// Note(Ed): Attempting to add monolithic package support
-	is_odin_package :: proc(pkg_path: string) -> bool 
-	{
-		monolithic_file_path := filepath.join({pkg_path, ".ODIN_MONOLITHIC_PACKAGE"}, context.temp_allocator)
-		if os.exists(monolithic_file_path) 
-		{
-			FOUND_FILE_SENTINEL : os.Error : os.General_Error.Exist
-			walk_proc :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (err: os.Error, skip_dir: bool) 
-			{
-				if !info.is_dir && filepath.ext(info.name) == ".odin" {
-					return FOUND_FILE_SENTINEL, true
-				}
-				return nil, false
-			}
-			err := filepath.walk(pkg_path, walk_proc, nil)
-			return err == FOUND_FILE_SENTINEL
-		}
-		matches, err := filepath.glob(fmt.tprintf("%v/*.odin", pkg_path), context.temp_allocator)
-		return err == .None && len(matches) > 0
+	
+	walk_data := WalkData{
+		packages = & pkgs,
+		monolithic_roots = &monolithic_roots,
 	}
 
-	_pkg: for pkg in pkgs 
-	{
-		// if !is_odin_package(pkg) {
-		matches, err := get_package_files(pkg, context.temp_allocator)
-		if len(matches) == 0 {
-			continue
-		}
 
-		for exclude_path in common.config.profile.exclude_path {
-			exclude_forward, _ := filepath.to_slash(exclude_path, context.temp_allocator)
+	filepath.walk(uri.path, walk_dir, &walk_data)
 
-			if exclude_forward[len(exclude_forward) - 2:] == "**" {
-				lower_pkg := strings.to_lower(pkg)
-				lower_exclude := strings.to_lower(exclude_forward[:len(exclude_forward) - 3])
-				if strings.contains(lower_pkg, lower_exclude) {
-					continue _pkg
-				}
-			} else {
-				lower_pkg := strings.to_lower(pkg)
-				lower_exclude := strings.to_lower(exclude_forward)
-				if lower_pkg == lower_exclude {
-					continue _pkg
-				}
-			}
-		}
+    // Process packages for symbols (existing logic)
+    _pkg: for pkg in pkgs {
+        matches, err := get_package_files(pkg, context.temp_allocator)
+        if len(matches) == 0 {
+            continue
+        }
 
-		try_build_package(pkg)
+        // Check exclusion paths
+        for exclude_path in common.config.profile.exclude_path {
+            exclude_forward, _ := filepath.to_slash(exclude_path, context.temp_allocator)
 
-		if results, ok := fuzzy_search(query, {pkg}); ok {
-			for result in results {
-				symbol := WorkspaceSymbol {
-					name = result.symbol.name,
-					location = {range = result.symbol.range, uri = result.symbol.uri},
-					kind = symbol_kind_to_type(result.symbol.type),
-				}
+            if exclude_forward[len(exclude_forward) - 2:] == "**" {
+                lower_pkg := strings.to_lower(pkg)
+                lower_exclude := strings.to_lower(exclude_forward[:len(exclude_forward) - 3])
+                if strings.contains(lower_pkg, lower_exclude) {
+                    continue _pkg
+                }
+            } else {
+                lower_pkg := strings.to_lower(pkg)
+                lower_exclude := strings.to_lower(exclude_forward)
+                if lower_pkg == lower_exclude {
+                    continue _pkg
+                }
+            }
+        }
 
-				append(&symbols, symbol)
-			}
-		}
-	}
-	return symbols[:], true
+        try_build_package(pkg)
+
+        if results, ok := fuzzy_search(query, {pkg}); ok {
+            for result in results {
+                symbol := WorkspaceSymbol {
+                    name = result.symbol.name,
+                    location = {range = result.symbol.range, uri = result.symbol.uri},
+                    kind = symbol_kind_to_type(result.symbol.type),
+                }
+                append(&symbols, symbol)
+            }
+        }
+    }
+    
+    return symbols[:], true
 }

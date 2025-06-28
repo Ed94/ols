@@ -59,54 +59,48 @@ clear_all_package_aliases :: proc() {
 
 //Go through all the collections to find all the possible packages that exists
 find_all_package_aliases :: proc() {
-	walk_proc :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (os.Error, bool) {
-		pkgs := cast(^[dynamic]string)user_data
-
-		// We only process directories.
-		if !info.is_dir {
-			return nil, false
- 		}
-		
-		// Check for monolithic package file.
-		monolithic_path := filepath.join({info.fullpath, ".ODIN_MONOLITHIC_PACKAGE"}, context.temp_allocator)
-		if os.exists(monolithic_path) {
-			// This is a monolithic package. Add it and don't descend further.
-			if !slice.contains(pkgs[:], info.fullpath) {
-				append(pkgs, strings.clone(info.fullpath))
-			}
-			return nil, true // skip subdirectories
-		}
-		
-		// Not a monolithic package. Check for .odin files in this directory.
-		matches, glob_err := filepath.glob(fmt.tprintf("%v/*.odin", info.fullpath))
-		if glob_err == .None && len(matches) > 0 {
-			if !slice.contains(pkgs[:], info.fullpath) {
-				append(pkgs, strings.clone(info.fullpath))
-			}
-		}
-		return nil, false
+	MonolithicWalkData :: struct {
+		packages: [dynamic]string,
+		monolithic_roots: [dynamic]string,
 	}
+	
+    walk_proc :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (os.Error, bool) {
+        pkgs := cast(^[dynamic]string)user_data
 
-	when (false) {
-	walk_proc :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (err: os.Errno, skip_dir: bool) {
-		data := cast(^[dynamic]string)user_data
-
-		if !info.is_dir && filepath.ext(info.name) == ".odin" {
-			dir := filepath.dir(info.fullpath, context.temp_allocator)
-			if !slice.contains(data[:], dir) {
-				append(data, dir)
-			}
-		}
-
-		return in_err, false
-	}
-	}
-
+        if !info.is_dir {
+            return nil, false
+        }
+        
+        // Check for monolithic package file FIRST
+        monolithic_path := filepath.join({info.fullpath, ".ODIN_MONOLITHIC_PACKAGE"}, context.temp_allocator)
+        if os.exists(monolithic_path) {
+            // This is a monolithic package. Add it and skip subdirectories.
+            if !slice.contains(pkgs[:], info.fullpath) {
+                append(pkgs, strings.clone(info.fullpath))
+            }
+            return nil, true // skip subdirectories of this monolithic package
+        }
+        
+        // Not a monolithic package. Check for .odin files in this directory.
+        matches, glob_err := filepath.glob(fmt.tprintf("%v/*.odin", info.fullpath))
+        if glob_err == .None && len(matches) > 0 {
+            if !slice.contains(pkgs[:], info.fullpath) {
+                append(pkgs, strings.clone(info.fullpath))
+            }
+        }
+        // Continue to subdirectories
+        return nil, false
+    }
+    
 	for k, v in common.config.collections {
-		pkgs := make([dynamic]string, context.temp_allocator)
-		filepath.walk(v, walk_proc, &pkgs)
+		walk_data := MonolithicWalkData{
+			packages = make([dynamic]string, context.temp_allocator),
+			monolithic_roots = make([dynamic]string, context.temp_allocator),
+		}
+		
+		filepath.walk(v, walk_proc, &walk_data)
 
-		for pkg in pkgs {
+		for pkg in walk_data.packages {
 			if pkg, err := filepath.rel(v, pkg, context.temp_allocator); err == .None {
 				forward_pkg, _ := filepath.to_slash(pkg, context.temp_allocator)
 				if k not_in build_cache.pkg_aliases {
@@ -114,9 +108,36 @@ find_all_package_aliases :: proc() {
 				}
 
 				aliases := &build_cache.pkg_aliases[k]
-
 				append(aliases, strings.clone(forward_pkg))
 			}
 		}
 	}
+}
+
+DebugWalkContext :: struct {
+	packages: [dynamic]string,
+	total_dirs_visited: int,
+	packages_found: int,
+	monolithic_packages_found: int,
+}
+
+// Context for cache walking
+CacheWalkContext :: struct {
+    packages: ^[dynamic]string,
+    dirs_checked: int,
+    monolithic_found: int,
+}
+
+// Helper to check if a path is inside a monolithic package
+is_inside_monolithic_package :: proc(path: string, monolithic_roots: []string) -> bool {
+	for root in monolithic_roots {
+		if strings.has_prefix(path, root) && path != root {
+			// Check if it's actually a subdirectory, not just a prefix match
+			relative := path[len(root):]
+			if len(relative) > 0 && (relative[0] == '/' || relative[0] == '\\') {
+				return true
+			}
+		}
+	}
+	return false
 }

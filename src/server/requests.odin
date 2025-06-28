@@ -732,7 +732,7 @@ request_initialize :: proc(
 	setup_index()
 
 	for pkg in indexer.builtin_packages {
-		try_build_package(pkg)
+		try_build_package_debug(pkg)
 	}
 
 	if initialize_params.capabilities.workspace.didChangeWatchedFiles.dynamicRegistration {
