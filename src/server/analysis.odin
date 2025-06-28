@@ -805,6 +805,14 @@ resolve_basic_directive :: proc(
 		ident.name = "Source_Code_Location"
 		set_ast_package_set_scoped(ast_context, ast_context.document_package)
 		return internal_resolve_type_identifier(ast_context, ident^)
+	case "region", "endregion":
+		token := tokenizer.Token { text = "true" }
+		return {
+			type = .Keyword,
+			signature = "bool",
+			pkg = ast_context.current_package,
+			value = SymbolUntypedValue{type = .Bool, tok = token},
+		}, true
 	}
 
 	return {}, false
