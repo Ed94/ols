@@ -19,12 +19,26 @@ walk_dir :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (er
 		dir, _ := filepath.to_slash(info.fullpath, context.temp_allocator)
 		dir_name := filepath.base(dir)
 
+		when (false) {
 		for blacklist in dir_blacklist {
 			if blacklist == dir_name {
 				return nil, true
 			}
 		}
 		append(pkgs, dir)
+		}
+        for blacklist in dir_blacklist {
+            if blacklist == dir_name {
+                return nil, true
+            }
+        }
+        append(pkgs, dir)
+
+		monolithic_path := filepath.join({dir, ".ODIN_MONOLITHIC_PACKAGE"}, context.temp_allocator)
+		if os.exists(monolithic_path) {
+			// It's a monolithic package, so we've added it and now we skip its subdirectories.
+			return nil, true 
+		}
 	}
 
 	return nil, false
@@ -32,19 +46,22 @@ walk_dir :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (er
 
 get_workspace_symbols :: proc(query: string) -> (workspace_symbols: []WorkspaceSymbol, ok: bool) {
 	workspace := common.config.workspace_folders[0]
-	uri := common.parse_uri(workspace.uri, context.temp_allocator) or_return
-	pkgs := make([dynamic]string, 0, context.temp_allocator)
-	symbols := make([dynamic]WorkspaceSymbol, 0, 100, context.temp_allocator)
+	uri       := common.parse_uri(workspace.uri, context.temp_allocator) or_return
+	pkgs      := make([dynamic]string, 0, context.temp_allocator)
+	symbols   := make([dynamic]WorkspaceSymbol, 0, 100, context.temp_allocator)
 
 	filepath.walk(uri.path, walk_dir, &pkgs)
-
 	log.error(pkgs)
 
-	is_odin_package :: proc(pkg_path: string) -> bool {
+	// Note(Ed): Attempting to add monolithic package support
+	is_odin_package :: proc(pkg_path: string) -> bool 
+	{
 		monolithic_file_path := filepath.join({pkg_path, ".ODIN_MONOLITHIC_PACKAGE"}, context.temp_allocator)
-		if os.exists(monolithic_file_path) {
+		if os.exists(monolithic_file_path) 
+		{
 			FOUND_FILE_SENTINEL : os.Error : os.General_Error.Exist
-			walk_proc :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (err: os.Error, skip_dir: bool) {
+			walk_proc :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (err: os.Error, skip_dir: bool) 
+			{
 				if !info.is_dir && filepath.ext(info.name) == ".odin" {
 					return FOUND_FILE_SENTINEL, true
 				}
@@ -57,8 +74,11 @@ get_workspace_symbols :: proc(query: string) -> (workspace_symbols: []WorkspaceS
 		return err == .None && len(matches) > 0
 	}
 
-	_pkg: for pkg in pkgs {
-		if !is_odin_package(pkg) {
+	_pkg: for pkg in pkgs 
+	{
+		// if !is_odin_package(pkg) {
+		matches, err := get_package_files(pkg, context.temp_allocator)
+		if len(matches) == 0 {
 			continue
 		}
 
@@ -94,7 +114,5 @@ get_workspace_symbols :: proc(query: string) -> (workspace_symbols: []WorkspaceS
 			}
 		}
 	}
-
-
 	return symbols[:], true
 }

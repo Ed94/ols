@@ -67,6 +67,42 @@ is_unix_variant :: proc(name: string) -> bool {
 	)
 }
 
+// TODO(Ed): Review usage of temp allocator here..
+// @(private)
+get_package_files :: proc(pkg_name: string, allocator := context.allocator) -> (matches: []string, err: os.Error) {
+	monolithic_path := path.join({pkg_name, ".ODIN_MONOLITHIC_PACKAGE"}, context.temp_allocator)
+
+	if os.exists(monolithic_path) {
+		files := make([dynamic]string, 0, 10, allocator)
+
+		walk_proc :: proc(info: os.File_Info, in_err: os.Error, user_data: rawptr) -> (err: os.Error, skip_dir: bool) {
+			if in_err != os.General_Error.None {
+				// Let filepath.walk handle the error reporting.
+				// We return nil to continue walking if possible, but the error will be returned by filepath.walk.
+				return nil, false
+			}
+
+			if !info.is_dir && filepath.ext(info.name) == ".odin" {
+				files_ptr := cast(^[dynamic]string)user_data
+				append(files_ptr, strings.clone(info.fullpath, context.temp_allocator))
+			}
+
+			return nil, false
+		}
+
+		walk_err := filepath.walk(pkg_name, walk_proc, &files)
+		if walk_err != nil {
+			log.errorf("filepath.walk failed for monolithic package %v: %v", pkg_name, walk_err)
+			return nil, .Unknown
+		}
+		return files[:], os.General_Error.None
+	}
+
+	match_error : filepath.Match_Error
+	matches, match_error = filepath.glob(fmt.tprintf("%v/*.odin", pkg_name), allocator)
+	return matches, os.General_Error.None
+}
+
 skip_file :: proc(filename: string) -> bool {
 	last_underscore_index := strings.last_index(filename, "_")
 	last_dot_index := strings.last_index(filename, ".")
@@ -98,6 +134,7 @@ try_build_package :: proc(pkg_name: string) {
 	monolithic_file_path := path.join({pkg_name, ".ODIN_MONOLITHIC_PACKAGE"}, context.temp_allocator)
 	is_monolithic := os.exists(monolithic_file_path)
 
+	when (false) {
 	matches: []string
 	if is_monolithic {
 		files := make([dynamic]string, 0, 10, context.temp_allocator)
@@ -118,6 +155,12 @@ try_build_package :: proc(pkg_name: string) {
 			log.errorf("Failed to glob %v for indexing package", pkg_name)
 			return
 		}
+	}
+	}
+	matches, err := get_package_files(pkg_name, context.temp_allocator)
+	if err != os.General_Error.None {
+		log.errorf("Failed to get package files for %v", pkg_name)
+		return
 	}
 
 	arena: runtime.Arena

@@ -59,6 +59,35 @@ clear_all_package_aliases :: proc() {
 
 //Go through all the collections to find all the possible packages that exists
 find_all_package_aliases :: proc() {
+	walk_proc :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (os.Error, bool) {
+		pkgs := cast(^[dynamic]string)user_data
+
+		// We only process directories.
+		if !info.is_dir {
+			return nil, false
+ 		}
+		
+		// Check for monolithic package file.
+		monolithic_path := filepath.join({info.fullpath, ".ODIN_MONOLITHIC_PACKAGE"}, context.temp_allocator)
+		if os.exists(monolithic_path) {
+			// This is a monolithic package. Add it and don't descend further.
+			if !slice.contains(pkgs[:], info.fullpath) {
+				append(pkgs, strings.clone(info.fullpath))
+			}
+			return nil, true // skip subdirectories
+		}
+		
+		// Not a monolithic package. Check for .odin files in this directory.
+		matches, glob_err := filepath.glob(fmt.tprintf("%v/*.odin", info.fullpath))
+		if glob_err == .None && len(matches) > 0 {
+			if !slice.contains(pkgs[:], info.fullpath) {
+				append(pkgs, strings.clone(info.fullpath))
+			}
+		}
+		return nil, false
+	}
+
+	when (false) {
 	walk_proc :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (err: os.Errno, skip_dir: bool) {
 		data := cast(^[dynamic]string)user_data
 
@@ -70,6 +99,7 @@ find_all_package_aliases :: proc() {
 		}
 
 		return in_err, false
+	}
 	}
 
 	for k, v in common.config.collections {

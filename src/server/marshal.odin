@@ -152,6 +152,7 @@ marshal_to_writer :: proc(w: io.Writer, v: any, opt: ^Marshal_Options) -> (err: 
 
 		s: string
 
+		// TODO(Ed): Make write_bits_128 after tagged release upates.
 		// allow uints to be printed as hex
 		if opt.write_uint_as_hex && (opt.spec == .JSON5 || opt.spec == .MJSON) {
 			switch i in a {
