@@ -64,7 +64,9 @@ function Update-GitRepo
 Push-Location $path_root
 
 $env:odin = join-path $path_odin 'odin.exe'
-Update-GitRepo -path $path_ols -url $url_ols_repo -build_command '.\build.bat'
+# Update-GitRepo -path $path_ols -url $url_ols_repo -build_command '.\build.bat'
+$build_bat = $path_root
+
 remove-item env:odin
 
 Pop-Location

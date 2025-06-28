@@ -19,3 +19,4 @@ ols.json
 deno.lock
 .vscode/settings.json
 build/last_built_commit_ols.txt
+odin/**
