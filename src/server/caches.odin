@@ -103,7 +103,7 @@ find_all_package_aliases :: proc() {
 		
 		filepath.walk(v, walk_proc, &walk_data)
 
-		log.errorf("Found %d packages in collection '%s'", len(walk_data), k)
+		log.errorf("Found %d packages in collection '%s'", len(walk_data.packages), k)
 
 		for pkg in walk_data.packages {
 			if pkg, err := filepath.rel(v, pkg, context.temp_allocator); err == .None {
