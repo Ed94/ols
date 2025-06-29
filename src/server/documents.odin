@@ -484,7 +484,7 @@ parse_imports :: proc(document: ^Document, config: ^common.Config) {
 		try_build_package(imp.name)
 	}
 
-	try_build_package(document.package_name)
+	try_build_package_debug(document.package_name)
 
 	document.imports = imports[:]
 }

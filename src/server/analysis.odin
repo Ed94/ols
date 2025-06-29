@@ -74,7 +74,6 @@ DocumentLocal :: struct {
 	offset:          int,
 	resolved_global: bool, //Some locals have already been resolved and are now in global space
 	local_global:    bool, //Some locals act like globals, i.e. functions defined inside functions.
-	id:              int, //Id that can used to connect the local to something, i.e. for stmt begin offset
 	pkg:             string,
 	variable:        bool,
 	parameter:       bool,
@@ -82,8 +81,10 @@ DocumentLocal :: struct {
 
 DeferredDepth :: 35
 
+LocalGroup :: map[string][dynamic]DocumentLocal
+
 AstContext :: struct {
-	locals:           map[int]map[string][dynamic]DocumentLocal, //locals all the way to the document position
+	locals:           [dynamic]LocalGroup, //locals all the way to the document position
 	globals:          map[string]GlobalExpr,
 	recursion_map:    map[rawptr]bool,
 	usings:           [dynamic]string,
@@ -95,7 +96,6 @@ AstContext :: struct {
 	deferred_package: [DeferredDepth]string, //When a package change happens when resolving
 	deferred_count:   int,
 	use_locals:       bool,
-	local_id:         int,
 	call:             ^ast.Call_Expr, //used to determine the types for generics and the correct function for overloaded functions
 	value_decl:       ^ast.Value_Decl,
 	field_name:       ast.Ident,
@@ -115,7 +115,7 @@ make_ast_context :: proc(
 	allocator := context.temp_allocator,
 ) -> AstContext {
 	ast_context := AstContext {
-		locals           = make(map[int]map[string][dynamic]DocumentLocal, 0, allocator),
+		locals           = make([dynamic]map[string][dynamic]DocumentLocal, 0, allocator),
 		globals          = make(map[string]GlobalExpr, 0, allocator),
 		usings           = make([dynamic]string, allocator),
 		recursion_map    = make(map[rawptr]bool, 0, allocator),
@@ -129,7 +129,7 @@ make_ast_context :: proc(
 		allocator        = allocator,
 	}
 
-	add_local_group(&ast_context, 0)
+	add_local_group(&ast_context)
 
 	return ast_context
 }
@@ -1201,19 +1201,18 @@ store_local :: proc(
 	rhs: ^ast.Expr,
 	offset: int,
 	name: string,
-	id: int,
 	local_global: bool,
 	resolved_global: bool,
 	variable: bool,
 	pkg: string,
 	parameter: bool,
 ) {
-	local_stack := &ast_context.locals[id][name]
+	local_group := get_local_group(ast_context)
+	local_stack := &local_group[name]
 
 	if local_stack == nil {
-		locals := &ast_context.locals[id]
-		locals[name] = make([dynamic]DocumentLocal, ast_context.allocator)
-		local_stack = &locals[name]
+		local_group[name] = make([dynamic]DocumentLocal, ast_context.allocator)
+		local_stack = &local_group[name]
 	}
 
 	append(
@@ -1222,7 +1221,6 @@ store_local :: proc(
 			lhs = lhs,
 			rhs = rhs,
 			offset = offset,
-			id = id,
 			resolved_global = resolved_global,
 			local_global = local_global,
 			pkg = pkg,
@@ -1232,16 +1230,23 @@ store_local :: proc(
 	)
 }
 
-add_local_group :: proc(ast_context: ^AstContext, id: int) {
-	ast_context.locals[id] = make(map[string][dynamic]DocumentLocal, 100, ast_context.allocator)
+add_local_group :: proc(ast_context: ^AstContext) {
+	append(&ast_context.locals, make(LocalGroup, 100, ast_context.allocator))
 }
 
-clear_local_group :: proc(ast_context: ^AstContext, id: int) {
-	ast_context.locals[id] = {}
+pop_local_group :: proc(ast_context: ^AstContext) {
+	pop(&ast_context.locals)
+}
+
+get_local_group :: proc(ast_context: ^AstContext) ->  ^LocalGroup {
+	if len(ast_context.locals) == 0 {
+		add_local_group(ast_context)
+	}
+	return &ast_context.locals[len(ast_context.locals) - 1]
 }
 
 get_local :: proc(ast_context: AstContext, ident: ast.Ident) -> (DocumentLocal, bool) {
-	for _, locals in ast_context.locals {
+	#reverse for locals in ast_context.locals {
 		local_stack := locals[ident.name] or_continue
 
 		#reverse for local in local_stack {
@@ -1268,14 +1273,14 @@ get_local :: proc(ast_context: AstContext, ident: ast.Ident) -> (DocumentLocal, 
 }
 
 get_local_offset :: proc(ast_context: ^AstContext, offset: int, name: string) -> int {
-	for _, locals in &ast_context.locals {
+	#reverse for locals in &ast_context.locals {
 		if local_stack, ok := locals[name]; ok {
 			#reverse for local, i in local_stack {
-				if local_stack[i].offset <= offset || local_stack[i].local_global {
+				if local.offset <= offset || local.local_global {
 					if i < 0 {
 						return -1
 					} else {
-						return local_stack[i].offset
+						return local.offset
 					}
 				}
 			}
@@ -2197,8 +2202,15 @@ resolve_location_selector :: proc(ast_context: ^AstContext, selector_expr: ^ast.
 	set_ast_package_set_scoped(ast_context, ast_context.document_package)
 
 	if selector, ok := selector_expr.derived.(^ast.Selector_Expr); ok {
-
-		symbol = resolve_type_expression(ast_context, selector.expr) or_return
+		// r00tz/Ed TODO 
+		// Check if the base expression is also a selector (for nested selectors)
+		if nested_selector, is_nested := selector.expr.derived.(^ast.Selector_Expr); is_nested {
+			// Recursively resolve the nested selector first
+			symbol = resolve_location_selector(ast_context, selector.expr) or_return
+		} else {
+			// Base case: resolve the type expression
+			symbol = resolve_type_expression(ast_context, selector.expr) or_return
+		}
 
 		field: string
 
@@ -2214,6 +2226,13 @@ resolve_location_selector :: proc(ast_context: ^AstContext, selector_expr: ^ast.
 			for name, i in v.names {
 				if strings.compare(name, field) == 0 {
 					symbol.range = v.ranges[i]
+					// For struct fields, we need to ensure the URI is set
+					if symbol.uri == "" && len(v.usings) > i {
+						// The field might be from a using, need to resolve its location
+						if field_symbol, ok := resolve_type_expression(ast_context, v.types[i]); ok {
+							symbol.uri = field_symbol.uri
+						}
+					}
 				}
 			}
 		case SymbolBitFieldValue:
@@ -2236,7 +2255,6 @@ resolve_location_selector :: proc(ast_context: ^AstContext, selector_expr: ^ast.
 
 	return {}, false
 }
-
 
 resolve_first_symbol_from_binary_expression :: proc(
 	ast_context: ^AstContext,
@@ -2981,7 +2999,6 @@ get_locals_value_decl :: proc(file: ast.File, value_decl: ast.Value_Decl, ast_co
 				value_decl.type,
 				value_decl.end.offset,
 				str,
-				ast_context.local_id,
 				ast_context.non_mutable_only,
 				false,
 				value_decl.is_mutable,
@@ -3021,7 +3038,6 @@ get_locals_value_decl :: proc(file: ast.File, value_decl: ast.Value_Decl, ast_co
 			results[result_i],
 			value_decl.end.offset,
 			str,
-			ast_context.local_id,
 			ast_context.non_mutable_only,
 			calls[result_i] or_else false,
 			value_decl.is_mutable,
@@ -3165,7 +3181,6 @@ get_locals_using :: proc(expr: ^ast.Expr, ast_context: ^AstContext) {
 					selector,
 					0,
 					name,
-					ast_context.local_id,
 					false,
 					ast_context.non_mutable_only,
 					true,
@@ -3185,7 +3200,6 @@ get_locals_using :: proc(expr: ^ast.Expr, ast_context: ^AstContext) {
 					selector,
 					0,
 					name,
-					ast_context.local_id,
 					false,
 					ast_context.non_mutable_only,
 					true,
@@ -3229,7 +3243,6 @@ get_locals_assign_stmt :: proc(file: ast.File, stmt: ast.Assign_Stmt, ast_contex
 				results[i],
 				ident.pos.offset,
 				ident.name,
-				ast_context.local_id,
 				ast_context.non_mutable_only,
 				false,
 				true,
@@ -3283,7 +3296,6 @@ get_locals_for_range_stmt :: proc(
 						make_int_ast(ast_context, ident.pos, ident.end),
 						ident.pos.offset,
 						ident.name,
-						ast_context.local_id,
 						ast_context.non_mutable_only,
 						false,
 						true,
@@ -3329,7 +3341,6 @@ get_locals_for_range_stmt :: proc(
 							expr,
 							ident.pos.offset,
 							ident.name,
-							ast_context.local_id,
 							ast_context.non_mutable_only,
 							false,
 							true,
@@ -3349,7 +3360,6 @@ get_locals_for_range_stmt :: proc(
 							make_rune_ast(ast_context, ident.pos, ident.end),
 							ident.pos.offset,
 							ident.name,
-							ast_context.local_id,
 							ast_context.non_mutable_only,
 							false,
 							true,
@@ -3369,7 +3379,6 @@ get_locals_for_range_stmt :: proc(
 							make_rune_ast(ast_context, ident.pos, ident.end),
 							ident.pos.offset,
 							ident.name,
-							ast_context.local_id,
 							ast_context.non_mutable_only,
 							false,
 							true,
@@ -3388,7 +3397,6 @@ get_locals_for_range_stmt :: proc(
 						v.key,
 						ident.pos.offset,
 						ident.name,
-						ast_context.local_id,
 						ast_context.non_mutable_only,
 						false,
 						true,
@@ -3405,7 +3413,6 @@ get_locals_for_range_stmt :: proc(
 						v.value,
 						ident.pos.offset,
 						ident.name,
-						ast_context.local_id,
 						ast_context.non_mutable_only,
 						false,
 						true,
@@ -3423,7 +3430,6 @@ get_locals_for_range_stmt :: proc(
 						v.expr,
 						ident.pos.offset,
 						ident.name,
-						ast_context.local_id,
 						ast_context.non_mutable_only,
 						false,
 						true,
@@ -3440,7 +3446,6 @@ get_locals_for_range_stmt :: proc(
 						make_int_ast(ast_context, ident.pos, ident.end),
 						ident.pos.offset,
 						ident.name,
-						ast_context.local_id,
 						ast_context.non_mutable_only,
 						false,
 						true,
@@ -3458,7 +3463,6 @@ get_locals_for_range_stmt :: proc(
 						v.expr,
 						ident.pos.offset,
 						ident.name,
-						ast_context.local_id,
 						ast_context.non_mutable_only,
 						false,
 						true,
@@ -3479,7 +3483,6 @@ get_locals_for_range_stmt :: proc(
 								v.len,
 								ident.pos.offset,
 								ident.name,
-								ast_context.local_id,
 								ast_context.non_mutable_only,
 								false,
 								true,
@@ -3494,7 +3497,6 @@ get_locals_for_range_stmt :: proc(
 							make_int_ast(ast_context, ident.pos, ident.end),
 							ident.pos.offset,
 							ident.name,
-							ast_context.local_id,
 							ast_context.non_mutable_only,
 							false,
 							true,
@@ -3513,7 +3515,6 @@ get_locals_for_range_stmt :: proc(
 						v.expr,
 						ident.pos.offset,
 						ident.name,
-						ast_context.local_id,
 						ast_context.non_mutable_only,
 						false,
 						true,
@@ -3530,7 +3531,6 @@ get_locals_for_range_stmt :: proc(
 						make_int_ast(ast_context, ident.pos, ident.end),
 						ident.pos.offset,
 						ident.name,
-						ast_context.local_id,
 						ast_context.non_mutable_only,
 						false,
 						true,
@@ -3602,7 +3602,6 @@ get_locals_type_switch_stmt :: proc(
 						cause.list[0],
 						ident.pos.offset,
 						ident.name,
-						ast_context.local_id,
 						ast_context.non_mutable_only,
 						false,
 						true,
@@ -3642,7 +3641,6 @@ get_locals_proc_param_and_results :: proc(
 						arg.type,
 						name.pos.offset,
 						str,
-						ast_context.local_id,
 						ast_context.non_mutable_only,
 						false,
 						true,
@@ -3664,7 +3662,6 @@ get_locals_proc_param_and_results :: proc(
 						arg.default_value,
 						name.pos.offset,
 						str,
-						ast_context.local_id,
 						ast_context.non_mutable_only,
 						false,
 						true,
@@ -3687,7 +3684,6 @@ get_locals_proc_param_and_results :: proc(
 						result.type,
 						name.pos.offset,
 						str,
-						ast_context.local_id,
 						ast_context.non_mutable_only,
 						false,
 						true,
@@ -3702,7 +3698,6 @@ get_locals_proc_param_and_results :: proc(
 						result.default_value,
 						name.pos.offset,
 						str,
-						ast_context.local_id,
 						ast_context.non_mutable_only,
 						false,
 						true,

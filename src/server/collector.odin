@@ -452,6 +452,9 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 	directory := path.dir(forward, context.temp_allocator)
 	package_map := get_package_mapping(file, collection.config, directory)
 
+	log.errorf("collect_symbols directory: %v", directory)
+	log.errorf("collect_symbols package_map: %v", package_map)
+
 	exprs := collect_globals(file, true)
 
 	for expr in exprs {

@@ -138,27 +138,28 @@ try_build_package :: proc(pkg_name: string) {
 
 	when (false) {
 	matches: []string
-	if is_monolithic {
-		files := make([dynamic]string, 0, 10, context.temp_allocator)
-		// Recursive walk for monolithic packages
-		walk_proc :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (err: os.Error, skip_dir: bool) {
-			data := cast(^[dynamic]string)user_data
-			if !info.is_dir && filepath.ext(info.name) == ".odin" {
-				append(data, strings.clone(info.fullpath, context.temp_allocator))
+		if is_monolithic {
+			files := make([dynamic]string, 0, 10, context.temp_allocator)
+			// Recursive walk for monolithic packages
+			walk_proc :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (err: os.Error, skip_dir: bool) {
+				data := cast(^[dynamic]string)user_data
+				if !info.is_dir && filepath.ext(info.name) == ".odin" {
+					append(data, strings.clone(info.fullpath, context.temp_allocator))
+				}
+				return nil, false
 			}
-			return nil, false
-		}
-		filepath.walk(pkg_name, walk_proc, &files)
-		matches = files[:]
-	} else {
-		err: filepath.Match_Error
-		matches, err = filepath.glob(fmt.tprintf("%v/*.odin", pkg_name), context.temp_allocator)
-		if err != .None {
-			log.errorf("Failed to glob %v for indexing package", pkg_name)
-			return
+			filepath.walk(pkg_name, walk_proc, &files)
+			matches = files[:]
+		} else {
+			err: filepath.Match_Error
+			matches, err = filepath.glob(fmt.tprintf("%v/*.odin", pkg_name), context.temp_allocator)
+			if err != .None {
+				log.errorf("Failed to glob %v for indexing package", pkg_name)
+				return
+			}
 		}
 	}
-	}
+
 	matches, err := get_package_files(pkg_name, context.temp_allocator)
 	if err != os.General_Error.None {
 		log.errorf("Failed to get package files for %v", pkg_name)
@@ -263,7 +264,7 @@ try_build_package_debug :: proc(pkg_name: string) {
 
 	// Log the files being indexed
 	for file, i in matches {
-		log.debugf("  -> File %d: %v", i+1, file)
+		log.errorf("  -> File %d: %v", i+1, file)
 	}
 
 	// Continue with existing build logic...
@@ -278,7 +279,7 @@ try_build_package_debug :: proc(pkg_name: string) {
 
 		for fullpath in matches {
 			if skip_file(filepath.base(fullpath)) {
-				log.debugf("  -> Skipping file: %v", fullpath)
+				log.errorf("  -> Skipping file: %v", fullpath)
 				continue
 			}
 
@@ -325,7 +326,7 @@ try_build_package_debug :: proc(pkg_name: string) {
 
 			if ret := collect_symbols(&indexer.index.collection, file, uri.uri); ret == .None {
 				symbols_collected += 1
-				log.debugf("  -> Successfully indexed file: %v", fullpath)
+				log.errorf("  -> Successfully indexed file: %v", fullpath)
 			} else {
 				log.errorf("Failed to collect symbols from file: %v (error: %v)", fullpath, ret)
 			}
