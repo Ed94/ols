@@ -230,6 +230,9 @@ DIRECTIVE_NAME_LIST :: []string {
 	/* return values flags */
 	"optional_ok",
 	"optional_allocator_error",
+	/* code folding */
+	"region",
+	"endregion"
 }
 
 completion_items_directives: []CompletionItem

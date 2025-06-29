@@ -241,6 +241,7 @@ call_map: map[string]proc(_: json.Value, _: RequestId, _: ^common.Config, _: ^Wr
 	"textDocument/rename"               = request_rename,
 	"textDocument/prepareRename"        = request_prepare_rename,
 	"textDocument/references"           = request_references,
+	"textDocument/foldingRange"         = request_folding_range,
 	"window/progress"                   = request_noop,
 	"workspace/symbol"                  = request_workspace_symbols,
 	"workspace/didChangeConfiguration"  = notification_workspace_did_change_configuration,
@@ -802,16 +803,31 @@ request_definition :: proc(
 		return .ParseError
 	}
 
+	// Debug: Log incoming request details
+	log.errorf("[DEBUG] Definition request for URI: %s", definition_params.textDocument.uri)
+	log.errorf("[DEBUG] Position: line=%d, character=%d", definition_params.position.line, definition_params.position.character)
+
 	document := document_get(definition_params.textDocument.uri)
 
 	if document == nil {
+		log.errorf("[DEBUG] Document is nil for URI: %s", definition_params.textDocument.uri)
 		return .InternalError
 	}
+
+	// Debug: Log document details
+	log.errorf("[DEBUG] Document found: %s", document.uri.uri)
+	log.errorf("[DEBUG] Document fullpath: %s", document.fullpath)
+	log.errorf("[DEBUG] Document package: %s", document.package_name)
 
 	locations, ok2 := get_definition_location(document, definition_params.position)
 
 	if !ok2 {
-		log.warn("Failed to get definition location")
+		log.errorf("[DEBUG] Failed to get definition location for %s at %d:%d", definition_params.textDocument.uri, definition_params.position.line, definition_params.position.character)
+	} else {
+		log.errorf("[DEBUG] Successfully got %d definition location(s)", len(locations))
+		for loc, i in locations {
+			log.errorf("[DEBUG] Location %d: URI=%s, Range=%v", i, loc.uri, loc.range)
+		}
 	}
 
 	if len(locations) == 1 {
@@ -1561,6 +1577,42 @@ request_workspace_symbols :: proc(
 
 	return .None
 }
+
+request_folding_range :: proc(
+	params: json.Value,
+	id: RequestId,
+	config: ^common.Config,
+	writer: ^Writer,
+) -> common.Error {
+	params_object, ok := params.(json.Object)
+
+	if !ok {
+		return .ParseError
+	}
+
+	folding_params: FoldingRangeParams
+
+	if unmarshal(params, folding_params, context.temp_allocator) != nil {
+		return .ParseError
+	}
+
+	document := document_get(folding_params.textDocument.uri)
+	log.errorf("request_folding_range: document %v", document)
+
+	if document == nil {
+		return .InternalError
+	}
+
+	folding_ranges := get_folding_ranges(document)
+	log.errorf("request_folding_range: folding_ranges %v", folding_ranges)
+
+	response := make_response_message(params = folding_ranges, id = id)
+
+	send_response(response, writer)
+
+	return .None
+}
+
 
 request_noop :: proc(params: json.Value, id: RequestId, config: ^common.Config, writer: ^Writer) -> common.Error {
 	return .None

@@ -31,6 +31,7 @@ ResponseParams :: union {
 	[]WorkspaceSymbol,
 	WorkspaceEdit,
 	common.Range,
+	[]FoldingRange,
 }
 
 RequestMessage :: struct {
@@ -558,6 +559,18 @@ WorkspaceEdit :: struct {
 
 WorkspaceSymbolParams :: struct {
 	query: string,
+}
+
+FoldingRange :: struct {
+	start_line:      int,
+	end_line:        int,
+	start_character: int,
+	end_character:   int,
+	kind:            string,
+}
+
+FoldingRangeParams :: struct {
+	textDocument: TextDocumentIdentifier,
 }
 
 WorkspaceSymbol :: struct {
