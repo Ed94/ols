@@ -145,6 +145,7 @@ ServerCapabilities :: struct {
 	referencesProvider:         bool,
 	workspaceSymbolProvider:    bool,
 	documentLinkProvider:       DocumentLinkOptions,
+	foldingRangeProvider:       bool, 
 }
 
 DidChangeWatchedFilesRegistrationOptions :: struct {

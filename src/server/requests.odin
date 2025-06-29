@@ -712,6 +712,7 @@ request_initialize :: proc(
 				hoverProvider = config.enable_hover,
 				documentFormattingProvider = config.enable_format,
 				documentLinkProvider = {resolveProvider = false},
+				foldingRangeProvider = true, 
 			},
 		},
 		id = id,
@@ -1597,7 +1598,6 @@ request_folding_range :: proc(
 	}
 
 	document := document_get(folding_params.textDocument.uri)
-	log.errorf("request_folding_range: document %v", document)
 
 	if document == nil {
 		return .InternalError
