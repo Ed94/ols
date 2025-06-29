@@ -2092,35 +2092,65 @@ resolve_location_type_identifier :: proc(ast_context: ^AstContext, node: ast.Ide
 }
 
 resolve_location_identifier :: proc(ast_context: ^AstContext, node: ast.Ident) -> (Symbol, bool) {
+	log.errorf("[DEBUG] resolve_location_identifier called for: %s", node.name)
 	symbol: Symbol
 
+	log.errorf("[DEBUG] Checking local variables...")
 	if local, ok := get_local(ast_context^, node); ok {
+		log.errorf("[DEBUG] Found local variable: %s", node.name)
 		symbol.range = common.get_token_range(local.lhs, ast_context.file.src)
 		uri := common.create_uri(local.lhs.pos.file, ast_context.allocator)
 		symbol.pkg = ast_context.document_package
 		symbol.uri = uri.uri
 		symbol.flags |= {.Local}
+		log.errorf("[DEBUG] Local variable found - URI: %s, Range: %v", symbol.uri, symbol.range)
 		return symbol, true
-	} else if global, ok := ast_context.globals[node.name]; ok {
+	} else {
+		log.errorf("[DEBUG] No local variable found for: %s", node.name)
+	}
+
+	log.errorf("[DEBUG] Checking global variables...")
+	if global, ok := ast_context.globals[node.name]; ok {
+		log.errorf("[DEBUG] Found global variable: %s", node.name)
 		symbol.range = common.get_token_range(global.name_expr, ast_context.file.src)
 		uri := common.create_uri(global.expr.pos.file, ast_context.allocator)
 		symbol.pkg = ast_context.document_package
 		symbol.uri = uri.uri
+		log.errorf("[DEBUG] Global variable found - URI: %s, Range: %v", symbol.uri, symbol.range)
 		return symbol, true
+	} else {
+		log.errorf("[DEBUG] No global variable found for: %s", node.name)
 	}
 
+	log.errorf("[DEBUG] Checking document package lookup...")
 	if symbol, ok := lookup(node.name, ast_context.document_package); ok {
+		log.errorf("[DEBUG] Found in document package: %s, URI: %s", node.name, symbol.uri)
 		return symbol, ok
+	} else {
+		log.errorf("[DEBUG] Not found in document package: %s", ast_context.document_package)
 	}
 
+	log.errorf("[DEBUG] Checking using packages...")
 	usings := get_using_packages(ast_context)
+	log.errorf("[DEBUG] Using packages: %v", usings)
 
 	for pkg in usings {
+		log.errorf("[DEBUG] Checking using package: %s", pkg)
 		if symbol, ok := lookup(node.name, pkg); ok {
+			log.errorf("[DEBUG] Found in using package %s: %s, URI: %s", pkg, node.name, symbol.uri)
 			return symbol, ok
 		}
 	}
 
+  // Fallback: Search all packages/paths in the entire workspace as a last resort.
+  for pkg_name, _ in indexer.index.collection.packages {
+  	if symbol, ok := lookup(node.name, pkg_name); 
+		ok {
+  		return symbol, ok
+    }
+  }
+
+	log.errorf("[DEBUG] Failed to resolve identifier: %s", node.name)
 	return {}, false
 }
 

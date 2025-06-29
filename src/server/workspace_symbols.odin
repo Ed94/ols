@@ -29,15 +29,12 @@ walk_dir :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (er
 		// Check for monolithic package
 		monolithic_path := filepath.join({dir, ".ODIN_MONOLITHIC_PACKAGE"}, context.temp_allocator)
 		if os.exists(monolithic_path) {
-            log.errorf("Found monolithic package at: %s", dir)
-			append(data.packages, dir)
-			append(data.monolithic_roots, strings.clone(dir, context.temp_allocator))
+			append(data.monolithic_roots, dir)
 			// Skip subdirectories - they're all part of this monolithic package
-			return nil, true
+			return nil, false
 		}
 		
 		// If not monolithic, treat as regular package
-        log.errorf("Found regular package at: %s", dir)
 		append(data.packages, dir)
 	}
 
@@ -95,7 +92,6 @@ walk_dir_with_tracking :: proc(info: os.File_Info, in_err: os.Errno, user_data: 
     return nil, false
 }
 
-
 WalkData :: struct {
 	packages: ^[dynamic]string,
 	monolithic_roots: ^[dynamic]string,
@@ -109,19 +105,23 @@ get_workspace_symbols :: proc(query: string) -> (workspace_symbols: []WorkspaceS
 	pkgs      := make([dynamic]string, 0, context.temp_allocator)
 	monolithic_roots := make([dynamic]string, 0, context.temp_allocator)
 	symbols   := make([dynamic]WorkspaceSymbol, 0, 100, context.temp_allocator)
-
 	
 	walk_data := WalkData{
 		packages = & pkgs,
 		monolithic_roots = &monolithic_roots,
 	}
 
-
 	filepath.walk(uri.path, walk_dir, &walk_data)
 
+	all_symbol_paths := make([dynamic]string, 0, len(pkgs) + len(monolithic_roots))
+	append_elems(&all_symbol_paths, ..pkgs[:])
+	append_elems(&all_symbol_paths, ..monolithic_roots[:])
+
     // Process packages for symbols (existing logic)
-    _pkg: for pkg in pkgs {
-        matches, err := get_package_files(pkg, context.temp_allocator)
+    _pkg: for path in all_symbol_paths {
+
+        log.errorf("get_workspace_symbols %v ", path)
+        matches, err := get_package_files(path, context.temp_allocator)
         if len(matches) == 0 {
             continue
         }
@@ -131,13 +131,13 @@ get_workspace_symbols :: proc(query: string) -> (workspace_symbols: []WorkspaceS
             exclude_forward, _ := filepath.to_slash(exclude_path, context.temp_allocator)
 
             if exclude_forward[len(exclude_forward) - 2:] == "**" {
-                lower_pkg := strings.to_lower(pkg)
+                lower_pkg := strings.to_lower(path)
                 lower_exclude := strings.to_lower(exclude_forward[:len(exclude_forward) - 3])
                 if strings.contains(lower_pkg, lower_exclude) {
                     continue _pkg
                 }
             } else {
-                lower_pkg := strings.to_lower(pkg)
+                lower_pkg := strings.to_lower(path)
                 lower_exclude := strings.to_lower(exclude_forward)
                 if lower_pkg == lower_exclude {
                     continue _pkg
@@ -145,9 +145,9 @@ get_workspace_symbols :: proc(query: string) -> (workspace_symbols: []WorkspaceS
             }
         }
 
-        try_build_package_debug(pkg)
+        try_build_package_debug(path)
 
-        if results, ok := fuzzy_search(query, {pkg}); ok {
+        if results, ok := fuzzy_search(query, {path}); ok {
             for result in results {
                 symbol := WorkspaceSymbol {
                     name = result.symbol.name,
