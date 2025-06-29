@@ -74,6 +74,7 @@ find_all_package_aliases :: proc() {
         // Check for monolithic package file FIRST
         monolithic_path := filepath.join({info.fullpath, ".ODIN_MONOLITHIC_PACKAGE"}, context.temp_allocator)
         if os.exists(monolithic_path) {
+					  log.errorf("Found monolithic package in collection: %s", info.fullpath)
             // This is a monolithic package. Add it and skip subdirectories.
             if !slice.contains(pkgs[:], info.fullpath) {
                 append(pkgs, strings.clone(info.fullpath))
@@ -97,8 +98,12 @@ find_all_package_aliases :: proc() {
 			packages = make([dynamic]string, context.temp_allocator),
 			monolithic_roots = make([dynamic]string, context.temp_allocator),
 		}
+
+		log.errorf("Scanning collection '%s' at path: %s", k, v)
 		
 		filepath.walk(v, walk_proc, &walk_data)
+
+		log.errorf("Found %d packages in collection '%s'", len(walk_data), k)
 
 		for pkg in walk_data.packages {
 			if pkg, err := filepath.rel(v, pkg, context.temp_allocator); err == .None {

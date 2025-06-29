@@ -29,6 +29,7 @@ walk_dir :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (er
 		// Check for monolithic package
 		monolithic_path := filepath.join({dir, ".ODIN_MONOLITHIC_PACKAGE"}, context.temp_allocator)
 		if os.exists(monolithic_path) {
+            log.errorf("Found monolithic package at: %s", dir)
 			append(data.packages, dir)
 			append(data.monolithic_roots, strings.clone(dir, context.temp_allocator))
 			// Skip subdirectories - they're all part of this monolithic package
@@ -36,6 +37,7 @@ walk_dir :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (er
 		}
 		
 		// If not monolithic, treat as regular package
+        log.errorf("Found regular package at: %s", dir)
 		append(data.packages, dir)
 	}
 

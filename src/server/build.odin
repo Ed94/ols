@@ -73,6 +73,7 @@ get_package_files :: proc(pkg_name: string, allocator := context.allocator) -> (
 	monolithic_path := path.join({pkg_name, ".ODIN_MONOLITHIC_PACKAGE"}, context.temp_allocator)
 
 	if os.exists(monolithic_path) {
+		log.errorf("Processing monolithic package: %s", pkg_name)
 		files := make([dynamic]string, 0, 10, allocator)
 
 		walk_proc :: proc(info: os.File_Info, in_err: os.Error, user_data: rawptr) -> (err: os.Error, skip_dir: bool) {
@@ -95,6 +96,7 @@ get_package_files :: proc(pkg_name: string, allocator := context.allocator) -> (
 			log.errorf("filepath.walk failed for monolithic package %v: %v", pkg_name, walk_err)
 			return nil, .Unknown
 		}
+		log.errorf("Monolithic package %s contains %d .odin files", pkg_name, len(files))
 		return files[:], os.General_Error.None
 	}
 
