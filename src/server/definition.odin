@@ -193,6 +193,14 @@ get_definition_location :: proc(document: ^Document, position: common.Position) 
 			&ast_context,
 			position_context.identifier.derived.(^ast.Ident)^,
 		); ok {
+			if v, ok := resolved.value.(SymbolAggregateValue); ok {
+				for symbol in v.symbols {
+					append(&locations, common.Location {
+						range = symbol.range,
+						uri = symbol.uri,
+					})
+				}
+			}
 			location.range = resolved.range
 			uri = resolved.uri
 			log.errorf("[DEBUG] Successfully resolved identifier - URI: %s, Range: %v", resolved.uri, resolved.range)

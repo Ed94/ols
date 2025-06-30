@@ -1238,7 +1238,7 @@ pop_local_group :: proc(ast_context: ^AstContext) {
 	pop(&ast_context.locals)
 }
 
-get_local_group :: proc(ast_context: ^AstContext) ->  ^LocalGroup {
+get_local_group :: proc(ast_context: ^AstContext) -> ^LocalGroup {
 	if len(ast_context.locals) == 0 {
 		add_local_group(ast_context)
 	}
@@ -1974,10 +1974,12 @@ resolve_symbol_return :: proc(ast_context: ^AstContext, symbol: Symbol, ok := tr
 
 	#partial switch &v in symbol.value {
 	case SymbolProcedureGroupValue:
-		if symbol, ok := resolve_function_overload(ast_context, v.group.derived.(^ast.Proc_Group)^); ok {
-			return symbol, true
+		if s, ok := resolve_function_overload(ast_context, v.group.derived.(^ast.Proc_Group)^); ok {
+			s.range = symbol.range
+			s.uri = symbol.uri
+			return s, true
 		} else {
-			return symbol, false
+			return s, false
 		}
 	case SymbolProcedureValue:
 		if v.generic {
@@ -2141,6 +2143,11 @@ resolve_location_identifier :: proc(ast_context: ^AstContext, node: ast.Ident) -
 			return symbol, ok
 		}
 	}
+	
+	// TODO(Ed): Review this. (Added from merge in.
+	if symbol, ok := lookup(node.name, "$builtin"); ok {
+		return resolve_symbol_return(ast_context, symbol)
+	}
 
   // Fallback: Search all packages/paths in the entire workspace as a last resort.
   for pkg_name, _ in indexer.index.collection.packages {
@@ -2213,10 +2220,16 @@ resolve_location_implicit_selector :: proc(
 			}
 		}
 	case SymbolUnionValue:
-		enum_value := unwrap_super_enum(ast_context, v) or_return
-		for name, i in enum_value.names {
-			if strings.compare(name, implicit_selector.field.name) == 0 {
-				symbol.range = enum_value.ranges[i]
+		for type in v.types {
+			enum_symbol := resolve_type_expression(ast_context, type) or_return
+			if value, ok := enum_symbol.value.(SymbolEnumValue); ok {
+				for name, i in value.names {
+					if strings.compare(name, implicit_selector.field.name) == 0 {
+						symbol.range = value.ranges[i]
+						symbol.uri = enum_symbol.uri
+						return symbol, ok
+					}
+				}
 			}
 		}
 	case:
@@ -2252,6 +2265,12 @@ resolve_location_selector :: proc(ast_context: ^AstContext, selector_expr: ^ast.
 		}
 
 		#partial switch v in symbol.value {
+		case SymbolEnumValue:
+			for name, i in v.names {
+				if strings.compare(name, field) == 0 {
+					symbol.range = v.ranges[i]
+				}
+			}
 		case SymbolStructValue:
 			for name, i in v.names {
 				if strings.compare(name, field) == 0 {
@@ -3205,18 +3224,7 @@ get_locals_using :: proc(expr: ^ast.Expr, ast_context: ^AstContext) {
 				selector.expr = expr
 				selector.field = new_type(ast.Ident, v.types[i].pos, v.types[i].end, ast_context.allocator)
 				selector.field.name = name
-				store_local(
-					ast_context,
-					expr,
-					selector,
-					0,
-					name,
-					false,
-					ast_context.non_mutable_only,
-					true,
-					"",
-					false,
-				)
+				store_local(ast_context, expr, selector, 0, name, false, ast_context.non_mutable_only, true, "", false)
 			}
 		case SymbolBitFieldValue:
 			for name, i in v.names {
@@ -3224,18 +3232,7 @@ get_locals_using :: proc(expr: ^ast.Expr, ast_context: ^AstContext) {
 				selector.expr = expr
 				selector.field = new_type(ast.Ident, v.types[i].pos, v.types[i].end, ast_context.allocator)
 				selector.field.name = name
-				store_local(
-					ast_context,
-					expr,
-					selector,
-					0,
-					name,
-					false,
-					ast_context.non_mutable_only,
-					true,
-					"",
-					false,
-				)
+				store_local(ast_context, expr, selector, 0, name, false, ast_context.non_mutable_only, true, "", false)
 			}
 		}
 	}
