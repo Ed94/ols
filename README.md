@@ -1,10 +1,13 @@
-# ols
+# Sectr Fork
+
+This is a fork intended for use with [Sectr Prototype](https://github.com/Ed94/SectrPrototype).  
+The project uses a custom compiler which needs some adjustments to the langauge server on how it interprets monolithic packages.
+
+Note: I keep this codebase in sync with the tagged releases of the regular odin compiler.
+
+## ols
 
 Language server for Odin. This project is still in early development.
-
-Note: This project is made to be up to date with the master branch of Odin.
-
-
 
 ## Table Of Contents
 
