@@ -356,6 +356,25 @@ expect_reference_locations :: proc(t: ^testing.T, src: ^Source, expect_locations
 	}
 }
 
+expect_prepare_rename_range :: proc(t: ^testing.T, src: ^Source, expect_range: common.Range) {
+	setup(src)
+	defer teardown(src)
+
+	range, ok := server.get_prepare_rename(src.document, src.position)
+	if !ok {
+		log.error("Failed to find range")
+	}
+
+	if range != expect_range {
+		ok = false
+		log.errorf("Failed to match with range: %v", expect_range)
+	}
+
+	if !ok {
+		log.error("Received: %v\n", range)
+	}
+}
+
 expect_semantic_tokens :: proc(t: ^testing.T, src: ^Source, expected: []server.SemanticToken) {
 	setup(src)
 	defer teardown(src)
@@ -395,5 +414,38 @@ expect_semantic_tokens :: proc(t: ^testing.T, src: ^Source, expected: []server.S
 			a.type,
 			a.modifiers,
 		)
+	}
+}
+
+expect_inlay_hints :: proc(t: ^testing.T, src: ^Source, expected_hints: []server.InlayHint) {
+	setup(src)
+	defer teardown(src)
+
+	resolve_flag: server.ResolveReferenceFlag
+	symbols_and_nodes := server.resolve_entire_file(src.document, resolve_flag, context.temp_allocator)
+
+	hints, ok := server.get_inlay_hints(src.document, symbols_and_nodes, &src.config)
+	if !ok {
+		log.error("Failed get_inlay_hints")
+		return
+	}
+
+	if len(expected_hints) == 0 && len(hints) > 0 {
+		log.errorf("Expected empty inlay hints, but received %v", hints)
+		return
+	}
+
+	testing.expectf(t,
+		len(expected_hints) == len(hints),
+		"\nExpected %d inlay hints, but received %d",
+		len(expected_hints),
+		len(hints),
+	)
+
+	for i in 0 ..< min(len(expected_hints), len(hints)) {
+		e, a := expected_hints[i], hints[i]
+		if e != a {
+			log.errorf("[%d]: Expected inlay hint\n%v, but received\n%v", i, e, a)
+		}
 	}
 }

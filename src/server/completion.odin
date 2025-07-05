@@ -565,8 +565,6 @@ get_selector_completion :: proc(
 				continue
 			}
 
-			set_ast_package_from_symbol_scoped(ast_context, selector)
-
 			if symbol, ok := resolve_type_expression(ast_context, v.types[i]); ok {
 				if expr, ok := position_context.selector.derived.(^ast.Selector_Expr); ok {
 					if expr.op.text == "->" && symbol.type != .Function {
@@ -732,6 +730,7 @@ get_implicit_completion :: proc(
 	//value decl infer a : My_Enum = .*
 	if position_context.value_decl != nil && position_context.value_decl.type != nil {
 		enum_value: Maybe(SymbolEnumValue)
+		exclude_names := make([dynamic]string, context.temp_allocator)
 
 		if _enum_value, ok := unwrap_enum(ast_context, position_context.value_decl.type); ok {
 			enum_value = _enum_value
@@ -744,16 +743,25 @@ get_implicit_completion :: proc(
 					enum_value = _enum_value
 				}
 			}
+			for elem in position_context.comp_lit.elems {
+				if expr, ok := elem.derived.(^ast.Implicit_Selector_Expr); ok {
+					if expr.field.name != "_" {
+						append(&exclude_names, expr.field.name)
+					}
+				}
+			}
 		}
 
 		if ev, ok := enum_value.?; ok {
 			for name in ev.names {
-				item := CompletionItem {
-					label  = name,
-					kind   = .EnumMember,
-					detail = name,
+				if !slice.contains(exclude_names[:], name) {
+					item := CompletionItem {
+						label  = name,
+						kind   = .EnumMember,
+						detail = name,
+					}
+					append(&items, item)
 				}
-				append(&items, item)
 			}
 
 			list.items = items[:]
@@ -1191,8 +1199,24 @@ get_implicit_completion :: proc(
 			symbol, ok = resolve_type_expression(ast_context, position_context.index.expr)
 		}
 
-		if array, ok := symbol.value.(SymbolFixedArrayValue); ok {
-			if enum_value, ok := unwrap_enum(ast_context, array.len); ok {
+		#partial switch v in symbol.value {
+		case SymbolFixedArrayValue:
+			if enum_value, ok := unwrap_enum(ast_context, v.len); ok {
+				for name in enum_value.names {
+					item := CompletionItem {
+						label  = name,
+						kind   = .EnumMember,
+						detail = name,
+					}
+
+					append(&items, item)
+				}
+
+				list.items = items[:]
+				return
+			}
+		case SymbolMapValue:
+			if enum_value, ok := unwrap_enum(ast_context, v.key); ok {
 				for name in enum_value.names {
 					item := CompletionItem {
 						label  = name,
@@ -2037,28 +2061,28 @@ format_to_label_details :: proc(list: ^CompletionList) {
 		// log.errorf("item:%v: %v:%v", item.kind, item.label, item.detail)
 		#partial switch item.kind {
 		case .Function:
-			proc_index := strings.index(item.detail, ": proc")
-			// check if the function return somrthing
-			proc_return_index := strings.index(item.detail, "->")
-			if proc_return_index > 0 {
-				proc_end_index := strings.index(item.detail[0:proc_return_index], ")")
-				if proc_return_index + 2 >= len(item.detail) {
-					break
-				}
-				item.labelDetails = CompletionItemLabelDetails {
-					detail      = item.detail[proc_index + 6:proc_return_index],
-					description = item.detail[proc_return_index + 2:],
-				}
-				item.detail = item.label
-			} else {
-				if proc_index + 6 >= len(item.detail) {
-					break
-				}
-				item.labelDetails = CompletionItemLabelDetails {
-					detail      = item.detail[proc_index + 6:],
-					description = "",
-				}
-				item.detail = ""
+			comment := ""
+			proc_info := ""
+			detail_split := strings.split_n(item.detail, "\n", 2)
+			if len(detail_split) == 1 {
+				// We have no comment
+				proc_info = detail_split[0]
+			} else if len(detail_split) == 2 {
+				comment = detail_split[0]
+				proc_info = detail_split[1]
+			}
+			// Split the leading name of the proc
+			proc_info_split := strings.split_n(proc_info, " proc", 2)
+			if len(proc_info_split) == 1 {
+				// No proc declaration (eg for a proc group)
+				proc_info = "(..)"
+			} else if len(proc_info_split) == 2 {
+				proc_info = proc_info_split[1]
+			}
+
+			item.labelDetails = CompletionItemLabelDetails {
+				detail      = proc_info,
+				description = fmt.tprintf(" %s", comment),
 			}
 		case .Variable, .Constant, .Field:
 			type_index := strings.index(item.detail, ":")
@@ -2066,16 +2090,12 @@ format_to_label_details :: proc(list: ^CompletionList) {
 				detail      = "",
 				description = item.detail[type_index + 1:],
 			}
-			item.detail = item.label
 		case .Struct, .Enum, .Class:
 			type_index := strings.index(item.detail, ":")
 			item.labelDetails = CompletionItemLabelDetails {
 				detail      = "",
 				description = item.detail[type_index + 1:],
 			}
-			item.detail = item.label
-		case .Keyword:
-			item.detail = "keyword"
 		}
 
 		// hack for sublime text's issue
