@@ -3364,6 +3364,67 @@ ast_completion_inline_using :: proc(t: ^testing.T) {
 }
 
 @(test)
+ast_completion_vtable_using :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package main
+
+		IUnknown :: struct {
+			using _iunknown_vtable: ^IUnknown_VTable,
+		}
+
+		IUnknownVtbl :: IUnknown_VTable
+		IUnknown_VTable :: struct {
+			QueryInterface: proc "system" (This: ^IUnknown, riid: REFIID, ppvObject: ^rawptr) -> HRESULT,
+			AddRef:         proc "system" (This: ^IUnknown) -> ULONG,
+			Release:        proc "system" (This: ^IUnknown) -> ULONG,
+		}
+
+		main :: proc() {
+			foo: ^IUnknown
+			foo->{*}
+		}
+		`,
+	}
+
+	test.expect_completion_details(
+		t,
+		&source,
+		"->",
+		{
+			`IUnknown.QueryInterface: proc(This: ^IUnknown, riid: REFIID, ppvObject: ^rawptr) -> HRESULT`,
+			`IUnknown.AddRef: proc(This: ^IUnknown) -> ULONG`,
+			`IUnknown.Release: proc(This: ^IUnknown) -> ULONG`,
+		},
+	)
+}
+
+@(test)
+ast_complete_ptr_using :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package main
+
+		B :: struct {
+			foo: int,
+		}
+
+		A :: struct {
+			using b: ^B,
+			using a: ^struct {
+				f: int,
+			},
+		}
+
+		main :: proc() {
+			foo: A
+			foo.{*}
+		}
+		`,
+	}
+
+	test.expect_completion_details(t, &source, "", {`A.b: ^test.B`, `A.a: ^test.struct`, `A.foo: int`, `A.f: int`})
+}
+
+@(test)
 ast_completion_poly_struct_another_package :: proc(t: ^testing.T) {
 	packages := make([dynamic]test.Package, context.temp_allocator)
 
@@ -3512,8 +3573,7 @@ ast_completion_enum_bitset :: proc(t: ^testing.T) {
 		`,
 	}
 
-	// I think this test will pass even if there is A and C
-	test.expect_completion_details(t, &source, "", {"B"})
+	test.expect_completion_details(t, &source, "", {"B"}, {"A", "C"})
 }
 
 @(test)
@@ -3535,7 +3595,7 @@ ast_completion_enum_map_key :: proc(t: ^testing.T) {
 }
 
 @(test)
-ast_completion_bitset_enum :: proc(t: ^testing.T) {
+ast_completion_enum_bitset_with_adding_values :: proc(t: ^testing.T) {
 	source := test.Source {
 		main = `package test
 		Foo :: enum {
@@ -3552,5 +3612,171 @@ ast_completion_bitset_enum :: proc(t: ^testing.T) {
 		`,
 	}
 
-	test.expect_completion_details(t, &source, "", {"B"})
+	test.expect_completion_details(t, &source, "", {"B"}, {"A"})
+}
+
+@(test)
+ast_completion_enumerated_array :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: enum {
+			Foo1,
+			Foo2,
+		}
+
+		Bar :: struct {}
+
+		db_data: [Foo]Bar = {
+			.{*}
+		}
+		`,
+	}
+	test.expect_completion_details(t, &source, "", {"Foo1", "Foo2"})
+}
+
+@(test)
+ast_completion_enumerated_array_should_exclude_already_added :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: enum {
+			Foo1,
+			Foo2,
+		}
+
+		Bar :: struct {}
+
+		db_data: [Foo]Bar = {
+			.Foo1 = {},
+			.{*}
+		}
+		`,
+	}
+
+	test.expect_completion_details(t, &source, "", {"Foo2"}, {"Foo1"})
+}
+
+@(test)
+ast_completion_enumerated_array_struct :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: enum {
+			Foo1,
+			Foo2,
+		}
+
+		Bar :: struct {
+			bar: int,
+		}
+
+		db_data: [Foo]Bar = {
+			.Foo1 = {
+				{*}
+			}
+		}
+		`,
+	}
+
+	test.expect_completion_details(t, &source, "", {"Bar.bar: int"})
+}
+
+@(test)
+ast_completion_nested_enumerated_array :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: enum {
+			Foo1,
+			Foo2,
+		}
+
+		Bar :: struct {
+			bar: int,
+		}
+
+		db_data: [Foo][Foo]Bar = {
+			.Foo1 = {
+				.Foo2 = {},
+				{*}
+			},
+		}
+		`,
+	}
+
+	test.expect_completion_details(t, &source, "", {".Foo1"}, {".Foo2"})
+}
+
+@(test)
+ast_completion_enumerated_array_implicit :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: enum {
+			Foo1,
+			Foo2,
+		}
+
+		Bar :: struct {
+			bar: int,
+		}
+
+		db_data: [Foo]Bar = {
+			.Foo2 = {},
+			.{*}
+		}
+		`,
+	}
+
+	test.expect_completion_details(t, &source, "", {"Foo1"}, {"Foo2"})
+}
+
+@(test)
+ast_completion_nested_enumerated_array_struct_fields :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: enum {
+			Foo1,
+			Foo2,
+		}
+
+		Bar :: struct {
+			bar: int,
+			bar2: string,
+		}
+
+		db_data: [Foo][Foo]Bar = {
+			.Foo1 = {
+				.Foo2 = {
+					{*}
+				},
+			},
+		}
+		`,
+	}
+
+	test.expect_completion_details(t, &source, "", {"Bar.bar: int", "Bar.bar2: string"})
+}
+
+@(test)
+ast_completion_union_switch_remove_used_cases :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo1 :: struct{}
+		Foo2 :: struct{}
+		Foo3 :: struct{}
+		Foo :: union {
+			Foo1,
+			Foo2,
+			Foo3,
+		}
+
+		main :: proc() {
+			foo: Foo
+
+			switch v in Foo {
+			case Foo1:
+			case F{*}
+			}
+		}
+		`,
+	}
+
+	test.expect_completion_details(t, &source, "", {"Foo2", "Foo3"}, {"Foo1"})
 }
