@@ -19,7 +19,13 @@ import "src:common"
 
 
 @(private)
-create_remove_edit :: proc(position_context: ^DocumentPositionContext) -> ([]TextEdit, bool) {
+create_remove_edit :: proc(
+	position_context: ^DocumentPositionContext,
+	strip_leading_period := false,
+) -> (
+	[]TextEdit,
+	bool,
+) {
 	range, ok := get_range_from_selection_start_to_dot(position_context)
 
 	if !ok {
@@ -29,6 +35,10 @@ create_remove_edit :: proc(position_context: ^DocumentPositionContext) -> ([]Tex
 	remove_range := common.Range {
 		start = range.start,
 		end   = range.end,
+	}
+
+	if strip_leading_period {
+		remove_range.end.character -= 1
 	}
 
 	remove_edit := TextEdit {
@@ -46,7 +56,7 @@ append_method_completion :: proc(
 	ast_context: ^AstContext,
 	selector_symbol: Symbol,
 	position_context: ^DocumentPositionContext,
-	items: ^[dynamic]CompletionItem,
+	results: ^[dynamic]CompletionResult,
 	receiver: string,
 ) {
 	if selector_symbol.type != .Variable && selector_symbol.type != .Struct {
@@ -54,20 +64,62 @@ append_method_completion :: proc(
 	}
 
 	remove_edit, ok := create_remove_edit(position_context)
-
 	if !ok {
 		return
 	}
 
-	for k, v in indexer.index.collection.packages {
+	if value, ok := selector_symbol.value.(SymbolUntypedValue); ok {
+		cases := untyped_map[value.type]
+		for c in cases {
+			method := Method {
+				name = c,
+				pkg  = selector_symbol.pkg,
+			}
+			collect_methods(
+				ast_context,
+				position_context,
+				method,
+				selector_symbol.pointers,
+				receiver,
+				remove_edit,
+				results,
+			)
+		}
+	} else {
 		method := Method {
 			name = selector_symbol.name,
 			pkg  = selector_symbol.pkg,
 		}
+		collect_methods(
+			ast_context,
+			position_context,
+			method,
+			selector_symbol.pointers,
+			receiver,
+			remove_edit,
+			results,
+		)
+	}
+
+}
+
+@(private = "file")
+collect_methods :: proc(
+	ast_context: ^AstContext,
+	position_context: ^DocumentPositionContext,
+	method: Method,
+	pointers: int,
+	receiver: string,
+	remove_edit: []TextEdit,
+	results: ^[dynamic]CompletionResult,
+) {
+	for k, v in indexer.index.collection.packages {
 		if symbols, ok := &v.methods[method]; ok {
 			for &symbol in symbols {
+				if should_skip_private_symbol(symbol, ast_context.current_package, ast_context.fullpath) {
+					continue
+				}
 				resolve_unresolved_symbol(ast_context, &symbol)
-				symbol.signature = get_short_signature(ast_context, symbol)
 
 				range, ok := get_range_from_selection_start_to_dot(position_context)
 
@@ -93,7 +145,7 @@ append_method_completion :: proc(
 					continue
 				}
 
-				pointers_to_add := first_arg.pointers - selector_symbol.pointers
+				pointers_to_add := first_arg.pointers - pointers
 
 				references := ""
 				dereferences := ""
@@ -113,7 +165,7 @@ append_method_completion :: proc(
 				if symbol.pkg != ast_context.document_package {
 					new_text = fmt.tprintf(
 						"%v.%v",
-						path.base(get_symbol_pkg_name(ast_context, symbol), false, ast_context.allocator),
+						path.base(get_symbol_pkg_name(ast_context, &symbol), false, ast_context.allocator),
 						symbol.name,
 					)
 				} else {
@@ -134,10 +186,10 @@ append_method_completion :: proc(
 					textEdit = TextEdit{newText = new_text, range = {start = range.end, end = range.end}},
 					insertTextFormat = .Snippet,
 					InsertTextMode = .adjustIndentation,
-					documentation = symbol.doc,
+					documentation = construct_symbol_docs(symbol),
 				}
 
-				append(items, item)
+				append(results, CompletionResult{completion_item = item})
 			}
 		}
 	}

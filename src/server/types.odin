@@ -31,6 +31,7 @@ ResponseParams :: union {
 	[]WorkspaceSymbol,
 	WorkspaceEdit,
 	common.Range,
+	[]CodeAction,
 	[]FoldingRange,
 }
 
@@ -145,6 +146,7 @@ ServerCapabilities :: struct {
 	referencesProvider:         bool,
 	workspaceSymbolProvider:    bool,
 	documentLinkProvider:       DocumentLinkOptions,
+	codeActionProvider:         CodeActionOptions,
 	foldingRangeProvider:       bool, 
 }
 
@@ -189,6 +191,7 @@ TextDocumentClientCapabilities :: struct {
 	hover:          HoverClientCapabilities,
 	signatureHelp:  SignatureHelpClientCapabilities,
 	documentSymbol: DocumentSymbolClientCapabilities,
+	codeAction:     CodeActionClientCapabilities,
 }
 
 StaleRequestSupport :: struct {
@@ -226,7 +229,6 @@ WorkspaceCapabilities :: struct {
 DidChangeWatchedFilesClientCapabilities :: struct {
 	dynamicRegistration: bool,
 }
-
 
 RangeOptional :: union {
 	common.Range,
@@ -357,11 +359,16 @@ InsertTextMode :: enum {
 	adjustIndentation = 2,
 }
 
+CompletionDocumention :: union {
+	MarkupContent,
+	string,
+}
+
 CompletionItem :: struct {
 	label:               string,
 	kind:                CompletionItemKind,
 	detail:              string,
-	documentation:       string,
+	documentation:       CompletionDocumention,
 	insertTextFormat:    Maybe(InsertTextFormat),
 	insertText:          Maybe(string),
 	InsertTextMode:      Maybe(InsertTextMode),
@@ -371,6 +378,7 @@ CompletionItem :: struct {
 	deprecated:          bool,
 	command:             Maybe(Command),
 	labelDetails:        Maybe(CompletionItemLabelDetails),
+	sortText:            Maybe(string),
 }
 
 CompletionItemLabelDetails :: struct {
@@ -400,18 +408,19 @@ FileSystemWatcher :: struct {
 OlsConfig :: struct {
 	collections:                       [dynamic]OlsConfigCollection,
 	thread_pool_count:                 Maybe(int),
-	enable_semantic_tokens:            Maybe(bool),
-	enable_document_symbols:           Maybe(bool),
 	enable_format:                     Maybe(bool),
 	enable_hover:                      Maybe(bool),
-	enable_procedure_context:          Maybe(bool),
-	enable_snippets:                   Maybe(bool),
+	enable_document_symbols:           Maybe(bool),
+	enable_fake_methods:               Maybe(bool),
+	enable_references:                 Maybe(bool),
+	enable_document_links:             Maybe(bool),
+	enable_completion_matching:        Maybe(bool),
 	enable_inlay_hints:                Maybe(bool),
 	enable_inlay_hints_params:         Maybe(bool),
 	enable_inlay_hints_default_params: Maybe(bool),
-	enable_references:                 Maybe(bool),
-	enable_rename:                     Maybe(bool),
-	enable_fake_methods:               Maybe(bool),
+	enable_semantic_tokens:            Maybe(bool),
+	enable_procedure_context:          Maybe(bool),
+	enable_snippets:                   Maybe(bool),
 	enable_procedure_snippet:          Maybe(bool),
 	enable_checker_only_saved:         Maybe(bool),
 	enable_auto_import:                Maybe(bool),
@@ -419,6 +428,7 @@ OlsConfig :: struct {
 	verbose:                           Maybe(bool),
 	file_log:                          Maybe(bool),
 	odin_command:                      string,
+	odin_root_override:                string,
 	checker_args:                      string,
 	checker_targets:                   []string,
 	profiles:                          [dynamic]common.ConfigProfile,

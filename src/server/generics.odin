@@ -61,7 +61,20 @@ resolve_poly :: proc(
 		return true
 	} else if type != nil {
 		if ident, ok := unwrap_ident(type); ok {
-			save_poly_map(ident, specialization, poly_map)
+			call_node_id := reflect.union_variant_typeid(call_node.derived)
+			specialization_id := reflect.union_variant_typeid(specialization.derived)
+			if call_node_id == specialization_id {
+				// if the specialization type matches the type of the parameter passed to the proc
+				// we store that rather than the specialization so we can follow it correctly
+				// for things like `textDocument/typeDefinition`
+				save_poly_map(
+					ident,
+					make_ident_ast(ast_context, call_node.pos, call_node.end, call_symbol.name),
+					poly_map,
+				)
+			} else {
+				save_poly_map(ident, specialization, poly_map)
+			}
 		}
 	}
 
@@ -431,19 +444,21 @@ resolve_generic_function :: proc {
 }
 
 resolve_generic_function_ast :: proc(ast_context: ^AstContext, proc_lit: ast.Proc_Lit) -> (Symbol, bool) {
-	if proc_lit.type.params == nil {
-		return Symbol{}, false
-	}
-
-	if proc_lit.type.results == nil {
-		return Symbol{}, false
-	}
-
 	if ast_context.call == nil {
 		return Symbol{}, false
 	}
 
-	return resolve_generic_function_symbol(ast_context, proc_lit.type.params.list, proc_lit.type.results.list)
+	params: []^ast.Field
+	if proc_lit.type.params != nil {
+		params = proc_lit.type.params.list
+	}
+
+	results: []^ast.Field
+	if proc_lit.type.results != nil {
+		results = proc_lit.type.results.list
+	}
+
+	return resolve_generic_function_symbol(ast_context, params, results)
 }
 
 
@@ -455,14 +470,6 @@ resolve_generic_function_symbol :: proc(
 	Symbol,
 	bool,
 ) {
-	if params == nil {
-		return {}, false
-	}
-
-	if results == nil {
-		return {}, false
-	}
-
 	if ast_context.call == nil {
 		return {}, false
 	}
@@ -494,6 +501,7 @@ resolve_generic_function_symbol :: proc(
 
 			if symbol, ok := resolve_type_expression(ast_context, call_expr.args[i]); ok {
 				file := strings.trim_prefix(symbol.uri, "file://")
+
 				if file == "" {
 					file = call_expr.args[i].pos.file
 				}
@@ -521,6 +529,10 @@ resolve_generic_function_symbol :: proc(
 						}
 					}
 				}
+
+				// We set the offset so we can find it as a local if it's based on the type of a local var
+				symbol_expr.pos.offset = call_expr.pos.offset
+				symbol_expr.end.offset = call_expr.end.offset
 
 				symbol_expr = clone_expr(symbol_expr, ast_context.allocator, nil)
 				param_type := clone_expr(param.type, ast_context.allocator, nil)
@@ -671,7 +683,10 @@ resolve_poly_struct :: proc(ast_context: ^AstContext, b: ^SymbolStructValueBuild
 				continue
 			}
 
-			if poly, ok := param.type.derived.(^ast.Typeid_Type); ok {
+			if ident, ok := param.type.derived.(^ast.Ident); ok {
+				poly_map[ident.name] = ast_context.call.args[i]
+				b.poly_names[i] = node_to_string(ast_context.call.args[i])
+			} else if poly, ok := param.type.derived.(^ast.Typeid_Type); ok {
 				if ident, ok := name.derived.(^ast.Ident); ok {
 					poly_map[ident.name] = ast_context.call.args[i]
 					b.poly_names[i] = node_to_string(ast_context.call.args[i])
@@ -693,7 +708,7 @@ resolve_poly_struct :: proc(ast_context: ^AstContext, b: ^SymbolStructValueBuild
 		poly_map:             map[string]^ast.Expr,
 		symbol_value_builder: ^SymbolStructValueBuilder,
 		parent:               ^ast.Node,
-		parent_proc:	      ^ast.Proc_Type,
+		parent_proc:          ^ast.Proc_Type,
 		i:                    int,
 		poly_index:           int,
 	}
@@ -747,7 +762,7 @@ resolve_poly_struct :: proc(ast_context: ^AstContext, b: ^SymbolStructValueBuild
 		}
 
 		#partial switch v in node.derived {
-		case ^ast.Array_Type, ^ast.Dynamic_Array_Type, ^ast.Selector_Expr, ^ast.Pointer_Type: 
+		case ^ast.Array_Type, ^ast.Dynamic_Array_Type, ^ast.Selector_Expr, ^ast.Pointer_Type:
 			data.parent = node
 		case ^ast.Proc_Type:
 			data.parent_proc = v
@@ -787,9 +802,11 @@ resolve_poly_union :: proc(ast_context: ^AstContext, poly_params: ^ast.Field_Lis
 	i := 0
 
 	poly_map := make(map[string]^ast.Expr, 0, context.temp_allocator)
+	poly_names := make([dynamic]string, 0, context.temp_allocator)
 
 	for param in poly_params.list {
 		for name in param.names {
+			append(&poly_names, node_to_string(name))
 			if len(ast_context.call.args) <= i {
 				break
 			}
@@ -801,9 +818,11 @@ resolve_poly_union :: proc(ast_context: ^AstContext, poly_params: ^ast.Field_Lis
 			if poly, ok := param.type.derived.(^ast.Typeid_Type); ok {
 				if ident, ok := name.derived.(^ast.Ident); ok {
 					poly_map[ident.name] = ast_context.call.args[i]
+					poly_names[i] = node_to_string(ast_context.call.args[i])
 				} else if poly, ok := name.derived.(^ast.Poly_Type); ok {
 					if poly.type != nil {
 						poly_map[poly.type.name] = ast_context.call.args[i]
+						poly_names[i] = node_to_string(ast_context.call.args[i])
 					}
 				}
 			}
@@ -831,4 +850,6 @@ resolve_poly_union :: proc(ast_context: ^AstContext, poly_params: ^ast.Field_Lis
 			}
 		}
 	}
+
+	symbol_value.poly_names = poly_names[:]
 }

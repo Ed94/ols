@@ -50,52 +50,13 @@ prepare_references :: proc(
 	ok = false
 	pkg := ""
 
-	if position_context.struct_type != nil {
-		found := false
-		done_struct: for field in position_context.struct_type.fields.list {
-			for name in field.names {
-				if position_in_node(name, position_context.position) {
-					symbol = Symbol {
-						range = common.get_token_range(name, ast_context.file.src),
-						pkg = ast_context.current_package,
-					}
-					found = true
-					resolve_flag = .Field
-					break done_struct
-				}
-			}
-			if position_in_node(field.type, position_context.position) {
-				if ident, ok := field.type.derived.(^ast.Ident); ok {
-					symbol, ok = resolve_location_identifier(ast_context, ident^)
-					if !ok {
-						return
-					}
-
-					found = true
-					resolve_flag = .Identifier
-					break done_struct
-				} else if selector, ok := field.type.derived.(^ast.Selector_Expr); ok {
-					symbol, ok = resolve_location_identifier(ast_context, ident^)
-					if !ok {
-						return
-					}
-
-					found = true
-					resolve_flag = .Identifier
-					break done_struct
-				}
-			}
-		}
-		if !found {
-			return
-		}
-	} else if position_context.enum_type != nil {
+	if position_context.enum_type != nil {
 		found := false
 		done_enum: for field in position_context.enum_type.fields {
 			if ident, ok := field.derived.(^ast.Ident); ok {
 				if position_in_node(ident, position_context.position) {
 					symbol = Symbol {
-						pkg = ast_context.current_package,
+						pkg   = ast_context.current_package,
 						range = common.get_token_range(ident, ast_context.file.src),
 					}
 					found = true
@@ -106,7 +67,7 @@ prepare_references :: proc(
 				if position_in_node(value.field, position_context.position) {
 					symbol = Symbol {
 						range = common.get_token_range(value.field, ast_context.file.src),
-						pkg = ast_context.current_package,
+						pkg   = ast_context.current_package,
 					}
 					found = true
 					resolve_flag = .Field
@@ -129,6 +90,13 @@ prepare_references :: proc(
 			return
 		}
 	} else if position_context.bitset_type != nil {
+		if position_in_node(position_context.bitset_type.elem, position_context.position) {
+			symbol, ok = resolve_location_type_expression(ast_context, position_context.bitset_type.elem)
+			if !ok {
+				return
+			}
+			resolve_flag = .Identifier
+		}
 		return
 	} else if position_context.union_type != nil {
 		found := false
@@ -155,13 +123,18 @@ prepare_references :: proc(
 		}
 
 	} else if position_context.field_value != nil &&
-	   position_context.comp_lit != nil &&
 	   !is_expr_basic_lit(position_context.field_value.field) &&
 	   position_in_node(position_context.field_value.field, position_context.position) {
-		symbol, ok = resolve_location_comp_lit_field(ast_context, position_context)
-
-		if !ok {
-			return
+		if position_context.comp_lit != nil {
+			symbol, ok = resolve_location_comp_lit_field(ast_context, position_context)
+			if !ok {
+				return
+			}
+		} else if position_context.call != nil {
+			symbol, ok = resolve_location_proc_param_name(ast_context, position_context)
+			if !ok {
+				return
+			}
 		}
 
 		resolve_flag = .Field
@@ -196,17 +169,61 @@ prepare_references :: proc(
 		if !ok {
 			return
 		}
-	} else if position_context.identifier != nil {
-		ident := position_context.identifier.derived.(^ast.Ident)
-		symbol, ok = resolve_location_identifier(ast_context, ident^)
+	} else {
+		// The order of these is important as a lot of the above can be defined within a struct so we 
+		// need to make sure we resolve that last
+		if position_context.bit_field_type != nil {
+			for field in position_context.bit_field_type.fields {
+				if position_in_node(field.name, position_context.position) {
+					symbol = Symbol {
+						range = common.get_token_range(field.name, ast_context.file.src),
+						pkg   = ast_context.current_package,
+						uri   = document.uri.uri,
+					}
+					return symbol, .Field, true
+				}
+				if position_in_node(field.type, position_context.position) {
+					node := get_desired_expr(field.type, position_context.position)
+					if symbol, ok = resolve_location_type_expression(ast_context, node); ok {
+						return symbol, .Identifier, true
+					}
+				}
+			}
+		}
 
-		resolve_flag = .Identifier
+		if position_context.struct_type != nil {
+			for field in position_context.struct_type.fields.list {
+				for name in field.names {
+					if position_in_node(name, position_context.position) {
+						symbol = Symbol {
+							range = common.get_token_range(name, ast_context.file.src),
+							pkg   = ast_context.current_package,
+							uri   = document.uri.uri,
+						}
+						return symbol, .Field, true
+					}
+				}
+				if position_in_node(field.type, position_context.position) {
+					node := get_desired_expr(field.type, position_context.position)
+					if symbol, ok = resolve_location_type_expression(ast_context, node); ok {
+						return symbol, .Identifier, true
+					}
+				}
+			}
+		}
 
-		if !ok {
+		if position_context.identifier != nil {
+			ident := position_context.identifier.derived.(^ast.Ident)
+			symbol, ok = resolve_location_identifier(ast_context, ident^)
+
+			resolve_flag = .Identifier
+
+			if !ok {
+				return
+			}
+		} else {
 			return
 		}
-	} else {
-		return
 	}
 	if symbol.uri == "" {
 		symbol.uri = document.uri.uri
@@ -322,7 +339,7 @@ resolve_references :: proc(
 			if in_pkg || symbol.pkg == document.package_name {
 				symbols_and_nodes := resolve_entire_file(&document, resolve_flag, context.allocator)
 				for k, v in symbols_and_nodes {
-					if v.symbol.uri == symbol.uri && v.symbol.range == symbol.range {
+					if strings.equal_fold(v.symbol.uri, symbol.uri) && v.symbol.range == symbol.range {
 						node_uri := common.create_uri(v.node.pos.file, ast_context.allocator)
 						range := common.get_token_range(v.node^, string(document.text))
 						//We don't have to have the `.` with, otherwise it renames the dot.
@@ -345,7 +362,7 @@ resolve_references :: proc(
 	symbols_and_nodes := resolve_entire_file(document, resolve_flag, context.allocator)
 
 	for k, v in symbols_and_nodes {
-		if v.symbol.uri == symbol.uri && v.symbol.range == symbol.range {
+		if strings.equal_fold(v.symbol.uri, symbol.uri) && v.symbol.range == symbol.range {
 			node_uri := common.create_uri(v.node.pos.file, ast_context.allocator)
 
 			range := common.get_token_range(v.node^, ast_context.file.src)

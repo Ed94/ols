@@ -241,6 +241,7 @@ call_map: map[string]proc(_: json.Value, _: RequestId, _: ^common.Config, _: ^Wr
 	"textDocument/rename"               = request_rename,
 	"textDocument/prepareRename"        = request_prepare_rename,
 	"textDocument/references"           = request_references,
+	"textDocument/codeAction"           = request_code_action,
 	"textDocument/foldingRange"         = request_folding_range,
 	"window/progress"                   = request_noop,
 	"workspace/symbol"                  = request_workspace_symbols,
@@ -248,14 +249,14 @@ call_map: map[string]proc(_: json.Value, _: RequestId, _: ^common.Config, _: ^Wr
 	"workspace/didChangeWatchedFiles"   = notification_did_change_watched_files,
 }
 
-notification_map: map[string]bool = {
-	"textDocument/didOpen"            = true,
-	"textDocument/didChange"          = true,
-	"textDocument/didClose"           = true,
-	"textDocument/didSave"            = true,
-	"initialized"                     = true,
-	"window/progress"                 = true,
-	"workspace/didChangeWatchedFiles" = true,
+notification_map: map[string]struct{} = {
+	"textDocument/didOpen"            = {},
+	"textDocument/didChange"          = {},
+	"textDocument/didClose"           = {},
+	"textDocument/didSave"            = {},
+	"initialized"                     = {},
+	"window/progress"                 = {},
+	"workspace/didChangeWatchedFiles" = {},
 }
 
 consume_requests :: proc(config: ^common.Config, writer: ^Writer) -> bool {
@@ -366,10 +367,11 @@ read_ols_initialize_options :: proc(config: ^common.Config, ols_config: OlsConfi
 		ols_config.enable_procedure_context.(bool) or_else config.enable_procedure_context
 	config.enable_snippets = ols_config.enable_snippets.(bool) or_else config.enable_snippets
 	config.enable_references = ols_config.enable_references.(bool) or_else config.enable_references
+	config.enable_completion_matching =
+		ols_config.enable_completion_matching.(bool) or_else config.enable_completion_matching
+	config.enable_document_links = ols_config.enable_document_links.(bool) or_else config.enable_document_links
 	config.verbose = ols_config.verbose.(bool) or_else config.verbose
 	config.file_log = ols_config.file_log.(bool) or_else config.file_log
-
-	config.enable_rename = ols_config.enable_rename.(bool) or_else config.enable_rename
 
 	config.enable_procedure_snippet =
 		ols_config.enable_procedure_snippet.(bool) or_else config.enable_procedure_snippet
@@ -386,6 +388,16 @@ read_ols_initialize_options :: proc(config: ^common.Config, ols_config: OlsConfi
 		config.odin_command, allocated = common.resolve_home_dir(config.odin_command)
 		if !allocated {
 			config.odin_command = strings.clone(config.odin_command, context.allocator)
+		}
+	}
+
+	if ols_config.odin_root_override != "" {
+		config.odin_root_override = strings.clone(ols_config.odin_root_override, context.temp_allocator)
+
+		allocated: bool
+		config.odin_root_override, allocated = common.resolve_home_dir(config.odin_root_override)
+		if !allocated {
+			config.odin_root_override = strings.clone(config.odin_root_override, context.allocator)
 		}
 	}
 
@@ -482,39 +494,43 @@ read_ols_initialize_options :: proc(config: ^common.Config, ols_config: OlsConfi
 	// their config and it would break.
 
 	odin_core_env: string
-	odin_bin := "odin" if config.odin_command == "" else config.odin_command
-
-	// If we don't have an absolute path
-	if !filepath.is_abs(odin_bin) {
-		// Join with the project path
-		tmp_path := path.join(elems = {uri.path, odin_bin})
-		if os.exists(tmp_path) {
-			odin_bin = tmp_path
-		}
-	}
-
-	root_buf: [1024]byte
-	root_slice := root_buf[:]
-	root_command := strings.concatenate({odin_bin, " root"}, context.temp_allocator)
-	code, ok, out := common.run_executable(root_command, &root_slice)
-	if ok && !strings.contains(string(out), "Usage") {
-		odin_core_env = string(out)
+	if config.odin_root_override != "" {
+		odin_core_env = config.odin_root_override
 	} else {
-		log.warnf("failed executing %q with code %v", root_command, code)
+		odin_bin := "odin" if config.odin_command == "" else config.odin_command
 
-		// User is probably on an older Odin version, let's try our best.
-
-		odin_core_env = os.get_env("ODIN_ROOT", context.temp_allocator)
-		if odin_core_env == "" {
-			if os.exists(odin_bin) {
-				odin_core_env = filepath.dir(odin_bin, context.temp_allocator)
-			} else if exe_path, ok := common.lookup_in_path(odin_bin); ok {
-				odin_core_env = filepath.dir(exe_path, context.temp_allocator)
+		// If we don't have an absolute path
+		if !filepath.is_abs(odin_bin) {
+			// Join with the project path
+			tmp_path := path.join(elems = {uri.path, odin_bin})
+			if os.exists(tmp_path) {
+				odin_bin = tmp_path
 			}
 		}
 
-		if abs_core_env, ok := filepath.abs(odin_core_env, context.temp_allocator); ok {
-			odin_core_env = abs_core_env
+		root_buf: [1024]byte
+		root_slice := root_buf[:]
+		root_command := strings.concatenate({odin_bin, " root"}, context.temp_allocator)
+		code, ok, out := common.run_executable(root_command, &root_slice)
+		if ok && !strings.contains(string(out), "Usage") {
+			odin_core_env = string(out)
+		} else {
+			log.warnf("failed executing %q with code %v", root_command, code)
+
+			// User is probably on an older Odin version, let's try our best.
+
+			odin_core_env = os.get_env("ODIN_ROOT", context.temp_allocator)
+			if odin_core_env == "" {
+				if os.exists(odin_bin) {
+					odin_core_env = filepath.dir(odin_bin, context.temp_allocator)
+				} else if exe_path, ok := common.lookup_in_path(odin_bin); ok {
+					odin_core_env = filepath.dir(exe_path, context.temp_allocator)
+				}
+			}
+
+			if abs_core_env, ok := filepath.abs(odin_core_env, context.temp_allocator); ok {
+				odin_core_env = abs_core_env
+			}
 		}
 	}
 
@@ -572,7 +588,8 @@ request_initialize :: proc(
 
 	initialize_params: RequestInitializeParams
 
-	if unmarshal(params, initialize_params, context.temp_allocator) != nil {
+	if err := unmarshal(params, initialize_params, context.temp_allocator); err != nil {
+		log.error("Here?", err, params)
 		return .ParseError
 	}
 
@@ -600,8 +617,9 @@ request_initialize :: proc(
 	config.enable_semantic_tokens = false
 	config.enable_procedure_context = false
 	config.enable_snippets = false
-	config.enable_references = false
-	config.enable_rename = false
+	config.enable_references = true
+	config.enable_completion_matching = true
+	config.enable_document_links = true
 	config.verbose = false
 	config.file_log = false
 	config.odin_command = ""
@@ -711,6 +729,7 @@ request_initialize :: proc(
 				hoverProvider = config.enable_hover,
 				documentFormattingProvider = config.enable_format,
 				documentLinkProvider = {resolveProvider = false},
+				codeActionProvider = {resolveProvider = false, codeActionKinds = {"refactor.rewrite"}},
 				foldingRangeProvider = true, 
 			},
 		},
@@ -907,7 +926,7 @@ request_completion :: proc(
 	}
 
 	list: CompletionList
-	list, ok = get_completion_list(document, completition_params.position, completition_params.context_)
+	list, ok = get_completion_list(document, completition_params.position, completition_params.context_, config)
 
 	if !ok {
 		return .InternalError
@@ -1338,6 +1357,14 @@ request_document_links :: proc(
 	config: ^common.Config,
 	writer: ^Writer,
 ) -> common.Error {
+	if !config.enable_document_links {
+		links: []DocumentLink
+		response := make_response_message(params = links, id = id)
+
+		send_response(response, writer)
+		return .None
+	}
+
 	params_object, ok := params.(json.Object)
 
 	if !ok {
@@ -1470,6 +1497,37 @@ request_references :: proc(
 	}
 
 	response := make_response_message(params = locations, id = id)
+
+	send_response(response, writer)
+
+	return .None
+}
+
+request_code_action :: proc(params: json.Value, id: RequestId, config: ^common.Config, writer: ^Writer) -> common.Error {
+	params_object, ok := params.(json.Object)
+
+	if !ok {
+		return .ParseError
+	}
+
+	code_action_params: CodeActionParams
+
+	if unmarshal(params, code_action_params, context.temp_allocator) != nil {
+		return .ParseError
+	}
+
+	document := document_get(code_action_params.textDocument.uri)
+
+	if document == nil {
+		return .InternalError
+	}
+
+	code_actions: []CodeAction
+	code_actions, ok = get_code_actions(document, code_action_params.range, config)
+	if !ok {
+		return .InternalError
+	}
+	response := make_response_message(params = code_actions, id = id)
 
 	send_response(response, writer)
 

@@ -170,16 +170,13 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 	case ^Implicit_Selector_Expr:
 		data.position_context.implicit = true
 		data.position_context.implicit_selector_expr = n
-		if data.flag != .None {
-			data.position_context.position = n.pos.offset
-			if symbol, ok := resolve_location_implicit_selector(data.ast_context, data.position_context, n); ok {
-				data.symbols[cast(uintptr)node] = SymbolAndNode {
-					node   = n,
-					symbol = symbol,
-				}
+		data.position_context.position = n.pos.offset
+		if symbol, ok := resolve_location_implicit_selector(data.ast_context, data.position_context, n); ok {
+			data.symbols[cast(uintptr)node] = SymbolAndNode {
+				node   = n,
+				symbol = symbol,
 			}
 		}
-		resolve_node(n.field, data)
 	case ^Selector_Expr:
 		data.position_context.selector = n.expr
 		data.position_context.field = n.field
@@ -232,6 +229,14 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 			}
 
 			resolve_node(n.value, data)
+		} else if data.flag != .None && data.position_context.call != nil {
+			if symbol, ok := resolve_location_proc_param_name(data.ast_context, data.position_context); ok {
+				data.symbols[cast(uintptr)node] = SymbolAndNode {
+					node   = n.field,
+					symbol = symbol,
+				}
+			}
+			resolve_node(n.value, data)
 		} else {
 			resolve_node(n.field, data)
 			resolve_node(n.value, data)
@@ -242,6 +247,10 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 		get_locals_proc_param_and_results(data.ast_context.file, n^, data.ast_context, data.position_context)
 
 		resolve_node(n.type, data)
+
+		for clause in n.where_clauses {
+			resolve_node(clause, data)
+		}
 
 		data.position_context.function = cast(^Proc_Lit)node
 
@@ -268,6 +277,10 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 		resolve_node(n.expr, data)
 		resolve_node(n.body, data)
 	case ^Switch_Stmt:
+		old_switch := data.position_context.switch_stmt
+		defer {
+			data.position_context.switch_stmt = old_switch
+		}
 		local_scope(data, n)
 		data.position_context.switch_stmt = n
 		resolve_node(n.label, data)
@@ -398,8 +411,13 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 		resolve_nodes(n.list, data)
 		resolve_nodes(n.body, data)
 	case ^Type_Switch_Stmt:
+		old_switch := data.position_context.switch_type_stmt
+		defer {
+			data.position_context.switch_type_stmt = old_switch
+		}
 		data.position_context.switch_type_stmt = n
 		resolve_node(n.label, data)
+		local_scope(data, n)
 		resolve_node(n.tag, data)
 		resolve_node(n.expr, data)
 		resolve_node(n.body, data)
@@ -543,6 +561,15 @@ resolve_node :: proc(node: ^ast.Node, data: ^FileResolveData) {
 		resolve_node(n.name, data)
 		resolve_node(n.type, data)
 		resolve_node(n.bit_size, data)
+		if data.flag != .None {
+			data.symbols[cast(uintptr)n.name] = SymbolAndNode {
+				node = n.name,
+				symbol = Symbol{
+					range = common.get_token_range(n.name, string(data.document.text)),
+					uri = strings.clone(common.create_uri(n.pos.file, data.ast_context.allocator).uri, data.ast_context.allocator),
+				},
+			}
+		}
 	case:
 	}
 

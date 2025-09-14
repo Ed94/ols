@@ -1,4 +1,6 @@
 *.exe
+*.o
+*.bin
 *.pdb
 *.rdbg
 *.obj
@@ -17,6 +19,8 @@ tests/tests
 ols.json
 .vscode/
 deno.lock
+*.dSYM/
+.DS_store
 .vscode/settings.json
 build/last_built_commit_ols.txt
 ols.proj

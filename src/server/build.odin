@@ -17,20 +17,20 @@ import "core:time"
 
 import "src:common"
 
-platform_os: map[string]bool = {
-	"windows" = true,
-	"linux"   = true,
-	"essence" = true,
-	"js"      = true,
-	"freebsd" = true,
-	"darwin"  = true,
-	"wasm32"  = true,
-	"openbsd" = true,
-	"wasi"    = true,
-	"wasm"    = true,
-	"haiku"   = true,
-	"netbsd"  = true,
-	"freebsd" = true,
+platform_os: map[string]struct{} = {
+	"windows" = {},
+	"linux"   = {},
+	"essence" = {},
+	"js"      = {},
+	"freebsd" = {},
+	"darwin"  = {},
+	"wasm32"  = {},
+	"openbsd" = {},
+	"wasi"    = {},
+	"wasm"    = {},
+	"haiku"   = {},
+	"netbsd"  = {},
+	"freebsd" = {},
 }
 
 
@@ -459,16 +459,11 @@ setup_index :: proc() {
 	dir_exe := common.get_executable_path(context.temp_allocator)
 	builtin_path := path.join({dir_exe, "builtin"}, context.temp_allocator)
 
-	if os.exists(builtin_path) {
-		try_build_package(builtin_path)
-		return
-	}
-
-	root_path := os.get_env("ODIN_ROOT", context.temp_allocator)
-	root_builtin_path := path.join({root_path, "/base/builtin"}, context.temp_allocator)
-
 	if !os.exists(builtin_path) {
-		log.errorf("Failed to find the builtin folder at `%v` or `%v`", builtin_path, root_builtin_path)
+		log.errorf(
+			"Failed to find the builtin folder at `%v`.\nPlease ensure the `builtin` folder that ships with `ols` is located next to the `ols` binary as it is required for ols to work with builtins",
+			builtin_path,
+		)
 		return
 	}
 

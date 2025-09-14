@@ -12,7 +12,7 @@ ast_goto_bit_set_comp_literal :: proc(t: ^testing.T) {
 	source := test.Source {
 		main = `package test
 		TestEnum :: enum {
-			valueOne, 
+			valueOne,
 			valueTwo,
 		}
 		
@@ -35,7 +35,7 @@ ast_goto_bit_set_index_enumerated_array :: proc(t: ^testing.T) {
 	source := test.Source {
 		main = `package test
 		TestEnum :: enum {
-			valueOne, 
+			valueOne,
 			valueTwo,
 		}
 
@@ -66,12 +66,12 @@ ast_goto_comp_lit_field :: proc(t: ^testing.T) {
         Point :: struct {
             x, y, z : f32,
         }
-        
+
         main :: proc() {
             point := Point {
                 x{*} = 2, y = 5, z = 0,
             }
-        } 
+        }
 		`,
 	}
 
@@ -89,12 +89,12 @@ ast_goto_struct_definition :: proc(t: ^testing.T) {
         Point :: struct {
             x, y, z : f32,
         }
-        
+
         main :: proc() {
             point := Po{*}int {
                 x = 2, y = 5, z = 0,
             }
-        } 
+        }
 		`,
 	}
 
@@ -112,13 +112,13 @@ ast_goto_comp_lit_field_indexed :: proc(t: ^testing.T) {
         Point :: struct {
             x, y, z : f32,
         }
-        
+
         main :: proc() {
             point := [2]Point {
                 {x{*} = 2, y = 5, z = 0},
                 {y = 10, y = 20, z = 10},
             }
-        } 
+        }
 		`,
 	}
 
@@ -539,6 +539,138 @@ ast_goto_struct_field_from_proc :: proc (t: ^testing.T) {
 
 	locations := []common.Location {
 		{range = {start = {line = 3, character = 3}, end = {line = 3, character = 6}}},
+	}
+
+	test.expect_definition_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_goto_proc_named_param :: proc (t: ^testing.T) {
+	source := test.Source {
+		main     = `package test
+
+		foo :: proc(a: int) {}
+
+		main :: proc() {
+			a := "hellope"
+			foo(a{*} = 0)
+		}
+		`,
+	}
+
+	locations := []common.Location {
+		{range = {start = {line = 2, character = 14}, end = {line = 2, character = 15}}},
+	}
+
+	test.expect_definition_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_goto_param_inside_where_clause :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		foo :: proc(x: [2]int)
+			where len(x) > 1,
+				  type_of(x{*}) == [2]int {
+		}
+	`,
+	}
+	locations := []common.Location {
+		{range = {start = {line = 1, character = 14}, end = {line = 1, character = 15}}},
+	}
+
+	test.expect_definition_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_goto_enum_struct_field_without_name :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: enum {
+			A,
+			B,
+		}
+
+		Bar :: struct {
+			foo: Foo,
+		}
+
+		main :: proc() {
+			bar: Bar = {.A{*}}
+		}
+	`,
+	}
+	locations := []common.Location {
+		{range = {start = {line = 2, character = 3}, end = {line = 2, character = 4}}},
+	}
+
+	test.expect_definition_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_goto_soa_field :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: struct {
+			x, y: int,
+		}
+
+		main :: proc() {
+			foos: #soa[]Foo
+			x := foos.x{*}
+		}
+	`,
+	}
+	locations := []common.Location {
+		{range = {start = {line = 2, character = 3}, end = {line = 2, character = 4}}},
+	}
+
+	test.expect_definition_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_goto_nested_using_bit_field_field :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: struct {
+			a: int,
+			using _: bit_field u8 {
+				b: u8 | 4
+			}
+		}
+
+		main :: proc() {
+			foo: Foo
+			b := foo.b{*}
+		}
+	`,
+	}
+	locations := []common.Location {
+		{range = {start = {line = 4, character = 4}, end = {line = 4, character = 5}}},
+	}
+
+	test.expect_definition_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_goto_nested_using_struct_field :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: struct {
+			a: int,
+			using _: struct {
+				b: u8
+			}
+		}
+
+		main :: proc() {
+			foo: Foo
+			b := foo.b{*}
+		}
+	`,
+	}
+	locations := []common.Location {
+		{range = {start = {line = 4, character = 4}, end = {line = 4, character = 5}}},
 	}
 
 	test.expect_definition_locations(t, &source, locations[:])

@@ -174,7 +174,7 @@ expect_completion_labels :: proc(t: ^testing.T, src: ^Source, trigger_character:
 		triggerCharacter = trigger_character,
 	}
 
-	completion_list, ok := server.get_completion_list(src.document, src.position, completion_context)
+	completion_list, ok := server.get_completion_list(src.document, src.position, completion_context, &src.config)
 
 	if !ok {
 		log.error("Failed get_completion_list")
@@ -201,8 +201,9 @@ expect_completion_labels :: proc(t: ^testing.T, src: ^Source, trigger_character:
 	}
 }
 
-expect_completion_details :: proc(
-	t: ^testing.T, src: ^Source,
+expect_completion_docs :: proc(
+	t: ^testing.T,
+	src: ^Source,
 	trigger_character: string,
 	expect_details: []string,
 	expect_excluded: []string = nil,
@@ -210,11 +211,23 @@ expect_completion_details :: proc(
 	setup(src)
 	defer teardown(src)
 
+	get_doc :: proc(doc: server.CompletionDocumention) -> string {
+		switch v in doc {
+		case string:
+			return v
+		case server.MarkupContent:
+			first_strip, _ := strings.remove(v.value, "```odin\n", 2, context.temp_allocator)
+			content_without_markdown, _ := strings.remove(first_strip, "\n```", 2, context.temp_allocator)
+			return content_without_markdown
+		}
+		return ""
+	}
+
 	completion_context := server.CompletionContext {
 		triggerCharacter = trigger_character,
 	}
 
-	completion_list, ok := server.get_completion_list(src.document, src.position, completion_context)
+	completion_list, ok := server.get_completion_list(src.document, src.position, completion_context, &src.config)
 
 	if !ok {
 		log.error("Failed get_completion_list")
@@ -228,9 +241,9 @@ expect_completion_details :: proc(
 
 	for expect_detail, i in expect_details {
 		for completion, j in completion_list.items {
-			if expect_detail == completion.detail {
+			if expect_detail == get_doc(completion.documentation) {
 				flags[i] += 1
-			}	
+			}
 		}
 	}
 
@@ -242,9 +255,52 @@ expect_completion_details :: proc(
 
 	for expect_exclude in expect_excluded {
 		for completion in completion_list.items {
-			if expect_exclude == completion.detail {
+			if expect_exclude == get_doc(completion.documentation) {
 				log.errorf("Expected completion label %v to not be included", expect_exclude)
 			}
+		}
+	}
+}
+
+expect_completion_insert_text :: proc(
+	t: ^testing.T,
+	src: ^Source,
+	trigger_character: string,
+	expect_inserts: []string,
+) {
+	setup(src)
+	defer teardown(src)
+
+	completion_context := server.CompletionContext {
+		triggerCharacter = trigger_character,
+	}
+
+	completion_list, ok := server.get_completion_list(src.document, src.position, completion_context, &src.config)
+
+	if !ok {
+		log.error("Failed get_completion_list")
+	}
+
+	if len(expect_inserts) == 0 && len(completion_list.items) > 0 {
+		log.errorf("Expected empty completion inserts, but received %v", completion_list.items)
+	}
+
+	flags := make([]int, len(expect_inserts), context.temp_allocator)
+
+	for expect_insert, i in expect_inserts {
+		for completion, j in completion_list.items {
+			if insert_text, ok := completion.insertText.(string); ok {
+				if expect_insert == insert_text {
+					flags[i] += 1
+					continue
+				}
+			}
+		}
+	}
+
+	for flag, i in flags {
+		if flag != 1 {
+			log.errorf("Expected completion insert %v, but received %v", expect_inserts[i], completion_list.items)
 		}
 	}
 }
@@ -265,7 +321,8 @@ expect_hover :: proc(t: ^testing.T, src: ^Source, expect_hover_string: string) {
 		return
 	}
 
-	content_without_markdown, _ := strings.remove(hover.contents.value[8:], "\n```", 1, context.temp_allocator)
+	first_strip, _ := strings.remove(hover.contents.value, "```odin\n", 2, context.temp_allocator)
+	content_without_markdown, _ := strings.remove(first_strip, "\n```", 2, context.temp_allocator)
 
 	if content_without_markdown != expect_hover_string {
 		log.errorf("Expected hover string:\n%q, but received:\n%q", expect_hover_string, content_without_markdown)
@@ -342,7 +399,12 @@ expect_type_definition_locations :: proc(t: ^testing.T, src: ^Source, expect_loc
 	}
 }
 
-expect_reference_locations :: proc(t: ^testing.T, src: ^Source, expect_locations: []common.Location) {
+expect_reference_locations :: proc(
+	t: ^testing.T,
+	src: ^Source,
+	expect_locations: []common.Location,
+	expect_excluded: []common.Location = nil,
+) {
 	setup(src)
 	defer teardown(src)
 
@@ -367,6 +429,14 @@ expect_reference_locations :: proc(t: ^testing.T, src: ^Source, expect_locations
 			log.errorf("%v \n", location)
 		}
 	}
+
+	for expect_exclude in expect_excluded {
+		for location in locations {
+			if expect_exclude.range == location.range {
+				log.errorf("Expected location %v to not be included\n", expect_exclude)
+			}
+		}
+	}
 }
 
 expect_prepare_rename_range :: proc(t: ^testing.T, src: ^Source, expect_range: common.Range) {
@@ -385,6 +455,38 @@ expect_prepare_rename_range :: proc(t: ^testing.T, src: ^Source, expect_range: c
 
 	if !ok {
 		log.error("Received: %v\n", range)
+	}
+}
+
+
+expect_action :: proc(t: ^testing.T, src: ^Source, expect_action_names: []string) {
+	setup(src)
+	defer teardown(src)
+
+	input_range := common.Range{start=src.position, end=src.position}
+	actions, ok := server.get_code_actions(src.document, input_range, &src.config)
+	if !ok {
+		log.error("Failed to find actions")
+	}
+
+	if len(expect_action_names) == 0 && len(actions) > 0 {
+		log.errorf("Expected empty actions, but received %v", actions)
+	}
+
+	flags := make([]int, len(expect_action_names), context.temp_allocator)
+
+	for name, i in expect_action_names {
+		for action, j in actions {
+			if action.title == name {
+				flags[i] += 1
+			}
+		}
+	}
+
+	for flag, i in flags {
+		if flag != 1 {
+			log.errorf("Expected action %v, but received %v", expect_action_names[i], actions)
+		}
 	}
 }
 
@@ -430,35 +532,114 @@ expect_semantic_tokens :: proc(t: ^testing.T, src: ^Source, expected: []server.S
 	}
 }
 
-expect_inlay_hints :: proc(t: ^testing.T, src: ^Source, expected_hints: []server.InlayHint) {
+expect_inlay_hints :: proc(t: ^testing.T, src: ^Source) {
+
+	src_builder := strings.builder_make(context.temp_allocator)
+	expected_hints := make([dynamic]server.InlayHint, context.temp_allocator)
+
+	HINT_OPEN  :: "[["
+	HINT_CLOSE :: "]]"
+
+	{
+		last, line, col: int
+		saw_brackets: bool
+		for i:= 0; i < len(src.main); i += 1 {
+			if saw_brackets {
+				if i+1 < len(src.main) && src.main[i:][:len(HINT_CLOSE)] == HINT_CLOSE {
+					saw_brackets = false
+					hint_str := src.main[last:i]
+					last = i+len(HINT_CLOSE)
+					i = last-1
+					append(&expected_hints, server.InlayHint{
+						position = {line, col},
+						label    = hint_str,
+						kind     = .Parameter,
+					})
+				}
+			} else {
+				if i+1 < len(src.main) && src.main[i:][:len(HINT_OPEN)] == HINT_OPEN {
+					strings.write_string(&src_builder, src.main[last:i])
+					saw_brackets = true
+					last = i+len(HINT_OPEN)
+					i = last-1
+				} else if src.main[i] == '\n' {
+					line += 1
+					col = 0
+				} else {
+					col += 1
+				}
+			}
+		}
+
+		if saw_brackets {
+			log.error("Unclosed inlay hint marker")
+			return
+		}
+
+		strings.write_string(&src_builder, src.main[last:len(src.main)])
+	}
+
+	src.main = strings.to_string(src_builder)
+
 	setup(src)
 	defer teardown(src)
 
 	resolve_flag: server.ResolveReferenceFlag
-	symbols_and_nodes := server.resolve_entire_file(src.document, resolve_flag, context.temp_allocator)
+	symbols_and_nodes := server.resolve_entire_file(src.document, resolve_flag, )
 
-	hints, ok := server.get_inlay_hints(src.document, symbols_and_nodes, &src.config)
-	if !ok {
+	hints, hints_ok := server.get_inlay_hints(src.document, symbols_and_nodes, &src.config)
+	if !hints_ok {
 		log.error("Failed get_inlay_hints")
-		return
-	}
-
-	if len(expected_hints) == 0 && len(hints) > 0 {
-		log.errorf("Expected empty inlay hints, but received %v", hints)
 		return
 	}
 
 	testing.expectf(t,
 		len(expected_hints) == len(hints),
-		"\nExpected %d inlay hints, but received %d",
+		"Expected %d inlay hints, but received %d",
 		len(expected_hints),
 		len(hints),
 	)
 
-	for i in 0 ..< min(len(expected_hints), len(hints)) {
-		e, a := expected_hints[i], hints[i]
-		if e != a {
-			log.errorf("[%d]: Expected inlay hint\n%v, but received\n%v", i, e, a)
+	lines := strings.split_lines(src.main, context.temp_allocator)
+
+	get_source_line_with_hint :: proc(lines: []string, hint: server.InlayHint) -> string {
+		line := lines[hint.position.line] if hint.position.line >= 0 && hint.position.line < len(lines) else ""
+		if hint.position.character >= 0 && hint.position.character <= len(line) {
+			builder := strings.builder_make(context.temp_allocator)
+			strings.write_string(&builder, line[:hint.position.character])
+			strings.write_string(&builder, HINT_OPEN)
+			strings.write_string(&builder, hint.label)
+			strings.write_string(&builder, HINT_CLOSE)
+			strings.write_string(&builder, line[hint.position.character:])
+			return strings.to_string(builder)
+		}
+		return ""
+	}
+
+	for i in 0 ..< max(len(expected_hints), len(hints)) {
+		expected_text := "---"
+		actual_text   := "---"
+
+		if i < len(expected_hints) {
+			expected := expected_hints[i]
+			expected_line := get_source_line_with_hint(lines, expected)
+			expected_text = fmt.tprintf("\"%s\" at (%d, %d): \"%s\"",
+				expected.label, expected.position.line, expected.position.character, expected_line)
+		}
+
+		if i < len(hints) {
+			actual := hints[i]
+			actual_line := get_source_line_with_hint(lines, actual)
+			actual_text = fmt.tprintf("\"%s\" at (%d, %d): \"%s\"",
+				actual.label, actual.position.line, actual.position.character, actual_line)
+		}
+
+		if i >= len(expected_hints) {
+			log.errorf("[%d]: Unexpected inlay hint\nExpected: %s\nActual:   %s", i, expected_text, actual_text)
+		} else if i >= len(hints) {
+			log.errorf("[%d]: Missing inlay hint\nExpected: %s\nActual:   %s", i, expected_text, actual_text)
+		} else if expected_hints[i] != hints[i] {
+			log.errorf("[%d]: Inlay hint mismatch\nExpected: %s\nActual:   %s", i, expected_text, actual_text)
 		}
 	}
 }

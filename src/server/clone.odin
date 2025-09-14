@@ -190,7 +190,9 @@ clone_node :: proc(node: ^ast.Node, allocator: mem.Allocator, unique_strings: ^m
 	case ^Proc_Type:
 		r.params = auto_cast clone_type(r.params, allocator, unique_strings)
 		r.results = auto_cast clone_type(r.results, allocator, unique_strings)
+		r.calling_convention = clone_calling_convention(r.calling_convention, allocator, unique_strings)
 	case ^Pointer_Type:
+		r.tag = clone_type(r.tag, allocator, unique_strings)
 		r.elem = clone_type(r.elem, allocator, unique_strings)
 	case ^Array_Type:
 		r.len = clone_type(r.len, allocator, unique_strings)
@@ -204,11 +206,15 @@ clone_node :: proc(node: ^ast.Node, allocator: mem.Allocator, unique_strings: ^m
 		r.align = clone_type(r.align, allocator, unique_strings)
 		r.fields = auto_cast clone_type(r.fields, allocator, unique_strings)
 		r.where_clauses = clone_type(r.where_clauses, allocator, unique_strings)
+		r.align = clone_type(r.align, allocator, unique_strings)
+		r.max_field_align = clone_type(r.max_field_align, allocator, unique_strings)
+		r.min_field_align = clone_type(r.min_field_align, allocator, unique_strings)
 	case ^Field:
 		r.names = clone_type(r.names, allocator, unique_strings)
 		r.type = clone_type(r.type, allocator, unique_strings)
 		r.default_value = clone_type(r.default_value, allocator, unique_strings)
 		r.docs = clone_type(r.docs, allocator, unique_strings)
+		r.comment = clone_type(r.comment, allocator, unique_strings)
 	case ^Field_List:
 		r.list = clone_type(r.list, allocator, unique_strings)
 	case ^Field_Value:
@@ -237,6 +243,10 @@ clone_node :: proc(node: ^ast.Node, allocator: mem.Allocator, unique_strings: ^m
 		r.x = clone_type(r.x, allocator, unique_strings)
 		r.cond = clone_type(r.cond, allocator, unique_strings)
 		r.y = clone_type(r.y, allocator, unique_strings)
+	case ^Ternary_If_Expr:
+		r.x = clone_type(r.x, allocator, unique_strings)
+		r.cond = clone_type(r.cond, allocator, unique_strings)
+		r.y = clone_type(r.y, allocator, unique_strings)
 	case ^Poly_Type:
 		r.type = auto_cast clone_type(r.type, allocator, unique_strings)
 		r.specialization = clone_type(r.specialization, allocator, unique_strings)
@@ -248,7 +258,7 @@ clone_node :: proc(node: ^ast.Node, allocator: mem.Allocator, unique_strings: ^m
 	case ^Proc_Lit:
 		r.type = cast(^Proc_Type)clone_type(cast(^Node)r.type, allocator, unique_strings)
 		r.body = nil
-		r.where_clauses = nil
+		r.where_clauses = clone_type(r.where_clauses, allocator, unique_strings)
 	case ^Helper_Type:
 		r.type = clone_type(r.type, allocator, unique_strings)
 	case ^Type_Cast:
@@ -278,6 +288,8 @@ clone_node :: proc(node: ^ast.Node, allocator: mem.Allocator, unique_strings: ^m
 		r.name = clone_type(r.name, allocator, unique_strings)
 		r.type = clone_type(r.type, allocator, unique_strings)
 		r.bit_size = clone_type(r.bit_size, allocator, unique_strings)
+		r.docs = clone_type(r.docs, allocator, unique_strings)
+		r.comments = clone_type(r.comments, allocator, unique_strings)
 	case ^Or_Else_Expr:
 		r.x = clone_type(r.x, allocator, unique_strings)
 		r.y = clone_type(r.y, allocator, unique_strings)
@@ -299,4 +311,23 @@ clone_comment_group :: proc(
 	unique_strings: ^map[string]string,
 ) -> ^ast.Comment_Group {
 	return cast(^ast.Comment_Group)clone_node(node, allocator, unique_strings)
+}
+
+clone_calling_convention :: proc(
+	cc: ast.Proc_Calling_Convention, allocator: mem.Allocator, unique_strings: ^map[string]string,
+) -> ast.Proc_Calling_Convention {
+	if cc == nil {
+		return nil
+	}
+
+	switch v in cc {
+	case string:
+		if unique_strings != nil {
+			return get_index_unique_string(unique_strings, allocator, v)
+		}
+		return strings.clone(v, allocator)
+	case ast.Proc_Calling_Convention_Extra:
+		return v
+	}
+	return nil
 }

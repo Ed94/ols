@@ -84,9 +84,12 @@ collect_procedure_fields :: proc(
 	return_list: ^ast.Field_List,
 	package_map: map[string]string,
 	attributes: []^ast.Attribute,
+	inlining: ast.Proc_Inlining,
+	where_clauses: []^ast.Expr,
 ) -> SymbolProcedureValue {
 	returns := make([dynamic]^ast.Field, 0, collection.allocator)
 	args := make([dynamic]^ast.Field, 0, collection.allocator)
+	attrs := make([dynamic]^ast.Attribute, 0, collection.allocator)
 
 	if return_list != nil {
 		for ret in return_list.list {
@@ -104,13 +107,27 @@ collect_procedure_fields :: proc(
 		}
 	}
 
+	for attr in attributes {
+		cloned := cast(^ast.Attribute)clone_type(attr, collection.allocator, &collection.unique_strings)
+		append(&attrs, cloned)
+	}
+
 	value := SymbolProcedureValue {
-		return_types      = returns[:],
-		orig_return_types = returns[:],
-		arg_types         = args[:],
-		orig_arg_types    = args[:],
-		generic           = is_procedure_generic(proc_type),
-		diverging         = proc_type.diverging,
+		return_types       = returns[:],
+		orig_return_types  = returns[:],
+		arg_types          = args[:],
+		orig_arg_types     = args[:],
+		generic            = is_procedure_generic(proc_type),
+		diverging          = proc_type.diverging,
+		calling_convention = clone_calling_convention(
+			proc_type.calling_convention,
+			collection.allocator,
+			&collection.unique_strings,
+		),
+		tags               = proc_type.tags,
+		attributes         = attrs[:],
+		inlining           = inlining,
+		where_clauses      = clone_array(where_clauses, collection.allocator, &collection.unique_strings),
 	}
 
 	return value
@@ -123,7 +140,7 @@ collect_struct_fields :: proc(
 	file: ast.File,
 ) -> SymbolStructValue {
 	b := symbol_struct_value_builder_make(collection.allocator)
-	construct_struct_field_docs(file, struct_type)
+	construct_struct_field_docs(file, struct_type, collection.allocator)
 
 	for field in struct_type.fields.list {
 		for n in field.names {
@@ -150,8 +167,24 @@ collect_struct_fields :: proc(
 		}
 	}
 
+	b.align = clone_expr(struct_type.align, collection.allocator, &collection.unique_strings)
+	b.max_field_align = clone_expr(struct_type.max_field_align, collection.allocator, &collection.unique_strings)
+	b.min_field_align = clone_expr(struct_type.min_field_align, collection.allocator, &collection.unique_strings)
+	if struct_type.is_no_copy {
+		b.tags |= {.Is_No_Copy}
+	}
+	if struct_type.is_packed {
+		b.tags |= {.Is_Packed}
+	}
+	if struct_type.is_raw_union {
+		b.tags |= {.Is_Raw_Union}
+	}
+
+	b.poly = cast(^ast.Field_List)clone_type(struct_type.poly_params, collection.allocator, &collection.unique_strings)
+	for clause in struct_type.where_clauses {
+		append(&b.where_clauses, clone_expr(clause, collection.allocator, &collection.unique_strings))
+	}
 	value := to_symbol_struct_value(b)
-	value.poly = cast(^ast.Field_List)clone_type(struct_type.poly_params, collection.allocator, &collection.unique_strings)
 
 	return value
 }
@@ -162,7 +195,7 @@ collect_bit_field_fields :: proc(
 	package_map: map[string]string,
 	file: ast.File,
 ) -> SymbolBitFieldValue {
-	construct_bit_field_field_docs(file, bit_field_type)
+	construct_bit_field_field_docs(file, bit_field_type, collection.allocator)
 	names := make([dynamic]string, 0, len(bit_field_type.fields), collection.allocator)
 	types := make([dynamic]^ast.Expr, 0, len(bit_field_type.fields), collection.allocator)
 	ranges := make([dynamic]common.Range, 0, len(bit_field_type.fields), collection.allocator)
@@ -215,11 +248,17 @@ collect_enum_fields :: proc(
 		append(&values, clone_type(value, collection.allocator, &collection.unique_strings))
 	}
 
+	temp_docs, temp_comments := get_field_docs_and_comments(file, enum_type.fields, context.temp_allocator)
+	docs := clone_dynamic_array(temp_docs, collection.allocator, &collection.unique_strings)
+	comments := clone_dynamic_array(temp_comments, collection.allocator, &collection.unique_strings)
+
 	value := SymbolEnumValue {
 		names     = names[:],
 		ranges    = ranges[:],
 		values    = values[:],
 		base_type = clone_type(enum_type.base_type, collection.allocator, &collection.unique_strings),
+		comments  = comments[:],
+		docs      = docs[:],
 	}
 
 	return value
@@ -229,6 +268,7 @@ collect_union_fields :: proc(
 	collection: ^SymbolCollection,
 	union_type: ast.Union_Type,
 	package_map: map[string]string,
+	file: ast.File,
 ) -> SymbolUnionValue {
 	types := make([dynamic]^ast.Expr, 0, collection.allocator)
 
@@ -238,9 +278,18 @@ collect_union_fields :: proc(
 		append(&types, cloned)
 	}
 
+	temp_docs, temp_comments := get_field_docs_and_comments(file, union_type.variants, context.temp_allocator)
+	docs := clone_dynamic_array(temp_docs, collection.allocator, &collection.unique_strings)
+	comments := clone_dynamic_array(temp_comments, collection.allocator, &collection.unique_strings)
+
 	value := SymbolUnionValue {
-		types = types[:],
-		poly  = cast(^ast.Field_List)clone_type(union_type.poly_params, collection.allocator, &collection.unique_strings),
+		types         = types[:],
+		poly          = cast(^ast.Field_List)clone_type(union_type.poly_params, collection.allocator, &collection.unique_strings),
+		comments      = comments[:],
+		docs          = docs[:],
+		kind          = union_type.kind,
+		align         = clone_type(union_type.align, collection.allocator, &collection.unique_strings),
+		where_clauses = clone_array(union_type.where_clauses, collection.allocator, &collection.unique_strings),
 	}
 
 	return value
@@ -346,7 +395,7 @@ collect_generic :: proc(
 	//In the c package code it uses a documentation package(builtin).
 	if selector, ok := expr.derived.(^ast.Selector_Expr); ok {
 		if ident, ok := selector.expr.derived.(^ast.Ident); ok {
-			if ident.name == "builtin" && strings.contains(uri, "Odin/core/c/c.odin") {
+			if ident.name == "builtin" && strings.contains(uri, "/core/c/c.odin") {
 				cloned := clone_type(selector.field, collection.allocator, &collection.unique_strings)
 				replace_package_alias(cloned, package_map, collection)
 				value := SymbolGenericValue {
@@ -365,6 +414,28 @@ collect_generic :: proc(
 	}
 
 	return value
+}
+
+add_comp_lit_fields :: proc(
+	collection: ^SymbolCollection,
+	generic: ^SymbolGenericValue,
+	comp_lit_type: ^ast.Comp_Lit,
+	package_map: map[string]string,
+	file: ast.File,
+) {
+	names := make([dynamic]string, 0, len(comp_lit_type.elems), collection.allocator)
+	ranges := make([dynamic]common.Range, 0, len(comp_lit_type.elems), collection.allocator)
+	for elem in comp_lit_type.elems {
+		if field_value, ok := elem.derived.(^ast.Field_Value); ok {
+			if ident, ok := field_value.field.derived.(^ast.Ident); ok {
+				name := get_index_unique_string(collection, ident.name)
+				append(&names, name)
+				append(&ranges, common.get_token_range(field_value, file.src))
+			}
+		}
+	}
+	generic.field_names = names[:]
+	generic.ranges = ranges[:]
 }
 
 collect_method :: proc(collection: ^SymbolCollection, symbol: Symbol) {
@@ -458,11 +529,11 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 	forward, _ := filepath.to_slash(file.fullpath, context.temp_allocator)
 	directory := path.dir(forward, context.temp_allocator)
 	package_map := get_package_mapping(file, collection.config, directory)
-
+	
 	log.errorf("collect_symbols directory: %v", directory)
 	log.errorf("collect_symbols package_map: %v", package_map)
-
-	exprs := collect_globals(file, true)
+	
+	exprs := collect_globals(file)
 
 	for expr in exprs {
 		symbol: Symbol
@@ -505,6 +576,8 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 					v.type.results,
 					package_map,
 					expr.attributes,
+					v.inlining,
+					v.where_clauses,
 				)
 			}
 
@@ -524,6 +597,8 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 				v.results,
 				package_map,
 				expr.attributes,
+				.None,
+				nil,
 			)
 		case ^ast.Proc_Group:
 			token = v^
@@ -551,7 +626,7 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 		case ^ast.Union_Type:
 			token = v^
 			token_type = .Union
-			symbol.value = collect_union_fields(collection, v^, package_map)
+			symbol.value = collect_union_fields(collection, v^, package_map, file)
 			symbol.signature = "union"
 		case ^ast.Bit_Set_Type:
 			token = v^
@@ -599,16 +674,29 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 			token = v^
 			symbol.value = collect_generic(collection, col_expr, package_map, uri)
 
-			if expr.mutable {
+			if .Mutable in expr.flags {
 				token_type = .Variable
 			} else {
 				token_type = .Unresolved
 			}
+		case ^ast.Comp_Lit:
+			generic := collect_generic(collection, col_expr, package_map, uri)
+
+			if .Mutable in expr.flags {
+				token_type = .Variable
+			} else {
+				token_type = .Unresolved
+			}
+
+			token = expr.expr
+
+			add_comp_lit_fields(collection, &generic, v, package_map, file)
+			symbol.value = generic
 		case:
 			// default
 			symbol.value = collect_generic(collection, col_expr, package_map, uri)
 
-			if expr.mutable {
+			if .Mutable in expr.flags {
 				token_type = .Variable
 			} else {
 				token_type = .Unresolved
@@ -621,11 +709,10 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 		symbol.range = common.get_token_range(expr.name_expr, file.src)
 		symbol.name = get_index_unique_string(collection, name)
 		symbol.type = token_type
-		symbol.doc = get_doc(expr.docs, collection.allocator)
+		symbol.doc = get_doc(expr.name_expr, expr.docs, collection.allocator)
 		symbol.uri = get_index_unique_string(collection, uri)
-		comment := get_file_comment(file, symbol.range.start.line + 1)
+		comment, _ := get_file_comment(file, symbol.range.start.line + 1)
 		symbol.comment = strings.clone(get_comment(comment), collection.allocator)
-		symbol.flags |= {.Distinct}
 
 		if expr.builtin || strings.contains(uri, "builtin.odin") {
 			symbol.pkg = "$builtin"
@@ -642,6 +729,10 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 			symbol.pkg = get_index_unique_string(collection, directory)
 		}
 
+		if is_distinct {
+			symbol.flags |= {.Distinct}
+		}
+
 		if expr.deprecated {
 			symbol.flags |= {.Deprecated}
 		}
@@ -652,6 +743,10 @@ collect_symbols :: proc(collection: ^SymbolCollection, file: ast.File, uri: stri
 
 		if expr.private == .Package {
 			symbol.flags |= {.PrivatePackage}
+		}
+
+		if .Variable in expr.flags {
+			symbol.flags |= {.Variable}
 		}
 
 

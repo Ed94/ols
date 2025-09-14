@@ -56,12 +56,45 @@ get_type_definition_locations :: proc(document: ^Document, position: common.Posi
 
 	if position_context.identifier != nil {
 		if ident, ok := position_context.identifier.derived.(^ast.Ident); ok {
-			if _, ok := keyword_map[ident.name]; ok {
+			if _, ok := keywords_docs[ident.name]; ok {
 				return {}, false
 			}
+		}
+	}
 
-			if str, ok := builtin_identifier_hover[ident.name]; ok {
-				return {}, false
+	if position_context.field_value != nil && position_in_node(position_context.field_value.field, position_context.position) {
+		if position_context.comp_lit != nil {
+			if comp_symbol, ok := resolve_comp_literal(&ast_context, &position_context); ok {
+				if field, ok := position_context.field_value.field.derived.(^ast.Ident); ok {
+					if position_in_node(field, position_context.position) {
+						if v, ok := comp_symbol.value.(SymbolStructValue); ok {
+							for name, i in v.names {
+								if name == field.name {
+									if symbol, ok := resolve_location_type_expression(&ast_context, v.types[i]); ok {
+										append_symbol_to_locations(&locations, document, symbol)
+										return locations[:], true
+									}
+								}
+							}
+						}
+					} else if v, ok := comp_symbol.value.(SymbolBitFieldValue); ok {
+						for name, i in v.names {
+							if name == field.name {
+								if symbol, ok := resolve_type_expression(&ast_context, v.types[i]); ok {
+									append_symbol_to_locations(&locations, document, symbol)
+									return locations[:], true
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if position_context.call != nil {
+			if symbol, ok := resolve_location_proc_param_name_type(&ast_context, &position_context); ok {
+				append_symbol_to_locations(&locations, document, symbol)
+				return locations[:], true
 			}
 		}
 	}
@@ -87,34 +120,6 @@ get_type_definition_locations :: proc(document: ^Document, position: common.Posi
 					if identifier, ok := name.derived.(^ast.Ident); ok && field.type != nil {
 						if position_context.value_decl != nil && len(position_context.value_decl.names) != 0 {
 							if symbol, ok := resolve_location_type_expression(&ast_context, field.type); ok {
-								append_symbol_to_locations(&locations, document, symbol)
-								return locations[:], true
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if position_context.field_value != nil && position_context.comp_lit != nil {
-		if comp_symbol, ok := resolve_comp_literal(&ast_context, &position_context); ok {
-			if field, ok := position_context.field_value.field.derived.(^ast.Ident); ok {
-				if position_in_node(field, position_context.position) {
-					if v, ok := comp_symbol.value.(SymbolStructValue); ok {
-						for name, i in v.names {
-							if name == field.name {
-								if symbol, ok := resolve_location_type_expression(&ast_context, v.types[i]); ok {
-									append_symbol_to_locations(&locations, document, symbol)
-									return locations[:], true
-								}
-							}
-						}
-					}
-				} else if v, ok := comp_symbol.value.(SymbolBitFieldValue); ok {
-					for name, i in v.names {
-						if name == field.name {
-							if symbol, ok := resolve_type_expression(&ast_context, v.types[i]); ok {
 								append_symbol_to_locations(&locations, document, symbol)
 								return locations[:], true
 							}
@@ -237,6 +242,13 @@ get_type_definition_locations :: proc(document: ^Document, position: common.Posi
 				append_symbol_to_locations(&locations, document, symbol)
 				return locations[:], true
 			}
+			append_symbol_to_locations(&locations, document, symbol)
+			return locations[:], true
+		}
+	}
+
+	if position_context.comp_lit != nil {
+		if symbol, ok := resolve_location_comp_literal(&ast_context, &position_context); ok {
 			append_symbol_to_locations(&locations, document, symbol)
 			return locations[:], true
 		}

@@ -69,6 +69,7 @@ seperate_proc_field_arguments :: proc(procedure: ^Symbol) {
 	}
 }
 
+
 get_signature_information :: proc(document: ^Document, position: common.Position) -> (SignatureHelp, bool) {
 	signature_help: SignatureHelp
 
@@ -134,11 +135,13 @@ get_signature_information :: proc(document: ^Document, position: common.Position
 			parameters[i].label = node_to_string(arg)
 		}
 
-		call.signature = get_short_signature(&ast_context, call)
-
+		sb := strings.builder_make(context.temp_allocator)
+		write_procedure_symbol_signature(&sb, value, detailed_signature = false)
+		call.signature = strings.to_string(sb)
+		
 		info := SignatureInformation {
-			label         = concatenate_symbol_information(&ast_context, call),
-			documentation = call.doc,
+			label         =	get_signature(call),
+			documentation = construct_symbol_docs(call, markdown = false),
 			parameters    = parameters,
 		}
 		append(&signature_information, info)
@@ -160,11 +163,14 @@ get_signature_information :: proc(document: ^Document, position: common.Position
 					parameters[i].label = node_to_string(arg)
 				}
 
-				symbol.signature = get_short_signature(&ast_context, symbol)
-
+				sb := strings.builder_make(context.temp_allocator)
+				write_procedure_symbol_signature(&sb, value, detailed_signature = false)
+				symbol.signature = strings.to_string(sb)
+				
 				info := SignatureInformation {
-					label         = concatenate_symbol_information(&ast_context, symbol),
-					documentation = symbol.doc,
+					label         =	get_signature(symbol),
+					documentation = construct_symbol_docs(symbol, markdown = false),
+					parameters    = parameters,
 				}
 
 				append(&signature_information, info)
@@ -175,4 +181,12 @@ get_signature_information :: proc(document: ^Document, position: common.Position
 	signature_help.signatures = signature_information[:]
 
 	return signature_help, true
+}
+
+@(private="file")
+get_signature :: proc(symbol: Symbol) -> string {
+	sb := strings.builder_make()
+	write_symbol_name(&sb, symbol)
+	strings.write_string(&sb, symbol.signature)
+	return strings.to_string(sb)
 }

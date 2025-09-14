@@ -740,3 +740,722 @@ ast_reference_enumerated_array :: proc(t: ^testing.T) {
 
 	test.expect_reference_locations(t, &source, locations[:])
 }
+
+@(test)
+ast_reference_struct_field_ptr :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+
+		Foo :: struct {
+			bar: ^Ba{*}r
+		}
+
+		Bar :: struct {}
+		`,
+	}
+
+	locations := []common.Location {
+		{range = {start = {line = 3, character = 9}, end = {line = 3, character = 12}}},
+		{range = {start = {line = 6, character = 2}, end = {line = 6, character = 5}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_reference_struct_and_enum_variant_same_name :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+
+		Foo :: enum {
+			Bar,
+			Bazz
+		}
+
+		Bar :: struct {}
+
+		main :: proc() {
+			f: Foo
+			f = .Bar
+			b := B{*}ar{}
+		}
+		`,
+	}
+
+	locations := []common.Location {
+		{range = {start = {line = 7, character = 2}, end = {line = 7, character = 5}}},
+		{range = {start = {line = 12, character = 8}, end = {line = 12, character = 11}}},
+	}
+	expect_excluded := []common.Location {
+		{range = {start = {line = 11, character = 8}, end = {line = 11, character = 11}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:], expect_excluded)
+}
+
+@(test)
+ast_reference_enum_variants_comp_lit_return :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+
+		Foo :: enum {
+			A,
+			B,
+		}
+
+		Bar :: struct {
+			foo: Foo,
+		}
+
+		foo :: proc() -> Bar {
+			return Bar {
+				foo = .A{*},
+			}
+		}
+
+		`,
+	}
+
+	locations := []common.Location {
+		{range = {start = {line = 3, character = 3}, end = {line = 3, character = 4}}},
+		{range = {start = {line = 13, character = 11}, end = {line = 13, character = 12}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_reference_enum_variants_comp_lit_return_implicit :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+
+		Foo :: enum {
+			A,
+			B,
+		}
+
+		Bar :: struct {
+			foo: Foo,
+		}
+
+		foo :: proc() -> Bar {
+			return {
+				foo = .A{*},
+			}
+		}
+
+		`,
+	}
+
+	locations := []common.Location {
+		{range = {start = {line = 3, character = 3}, end = {line = 3, character = 4}}},
+		{range = {start = {line = 13, character = 11}, end = {line = 13, character = 12}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_reference_enum_indexed_array_return_value :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+
+		Foo :: enum {
+			A,
+			B,
+		}
+
+		foo :: proc() -> [Foo]int {
+			return {
+				.A{*} = 2,
+				.B = 1,
+			}
+		}
+
+		`,
+	}
+
+	locations := []common.Location {
+		{range = {start = {line = 3, character = 3}, end = {line = 3, character = 4}}},
+		{range = {start = {line = 9, character = 5}, end = {line = 9, character = 6}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_reference_enum_conflict_switch_statement :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+
+		Foo :: enum {
+			A{*},
+			B,
+		}
+
+		Bar :: struct {
+			foo: Foo,
+		}
+
+		foo :: proc() {
+			s := "test"
+			switch s {
+			case "test2":
+			}
+
+			bar := Bar{
+				foo = .A
+			}
+		}
+		`,
+	}
+
+	locations := []common.Location {
+		{range = {start = {line = 3, character = 3}, end = {line = 3, character = 4}}},
+		{range = {start = {line = 18, character = 11}, end = {line = 18, character = 12}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_reference_enum_nested_with_switch :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+
+		Foo :: enum {
+			A{*},
+			B,
+		}
+
+		foo :: proc() -> Foo {
+			f := Foo.A
+			switch f {
+			case .A:
+				return .B
+			case .B
+				return .A
+			}
+		}
+		`,
+	}
+
+	locations := []common.Location {
+		{range = {start = {line = 3, character = 3}, end = {line = 3, character = 4}}},
+		{range = {start = {line = 8, character = 12}, end = {line = 8, character = 13}}},
+		{range = {start = {line = 10, character = 9}, end = {line = 10, character = 10}}},
+		{range = {start = {line = 13, character = 12}, end = {line = 13, character = 13}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_reference_struct_field_enumerated_array :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+
+		Foo :: enum {
+			A,
+			B,
+		}
+
+		Bar :: struct {
+			foos: [F{*}oo]Bazz
+		}
+
+		Bazz :: struct {}
+		`,
+	}
+
+	locations := []common.Location {
+		{range = {start = {line = 2, character = 2}, end = {line = 2, character = 5}}},
+		{range = {start = {line = 8, character = 10}, end = {line = 8, character = 13}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_reference_struct_field_map_key :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+
+		Foo :: int
+
+		Bar :: struct {}
+
+		Bazz :: struct {
+			bars: map[Fo{*}o]Bar
+		}
+		`,
+	}
+
+	locations := []common.Location {
+		{range = {start = {line = 2, character = 2}, end = {line = 2, character = 5}}},
+		{range = {start = {line = 7, character = 13}, end = {line = 7, character = 16}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_reference_struct_field_map_value :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+
+		Foo :: int
+
+		Bar :: struct {}
+
+		Bazz :: struct {
+			bars: map[Foo]B{*}ar
+		}
+
+		`,
+	}
+
+	locations := []common.Location {
+		{range = {start = {line = 4, character = 2}, end = {line = 4, character = 5}}},
+		{range = {start = {line = 7, character = 17}, end = {line = 7, character = 20}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_reference_named_parameter_same_as_variable :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+
+		foo :: proc(a: int) {}
+
+		main :: proc() {
+			a := "hellope"
+			foo(a{*} = 0)
+		}
+		`,
+	}
+
+	locations := []common.Location {
+		{range = {start = {line = 2, character = 14}, end = {line = 2, character = 15}}},
+		{range = {start = {line = 6, character = 7}, end = {line = 6, character = 8}}},
+	}
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_reference_struct_comp_lit_field :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+
+		Foo :: enum {
+			A,
+			B,
+		}
+
+		Bar :: struct {
+			foo: Foo,
+		}
+
+		foo :: proc() -> Bar {
+			return Bar {
+				fo{*}o = .A,
+			}
+		}
+
+		`,
+	}
+
+	locations := []common.Location {
+		{range = {start = {line = 8, character = 3}, end = {line = 8, character = 6}}},
+		{range = {start = {line = 13, character = 4}, end = {line = 13, character = 7}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_references_inside_where_clause :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		foo :: proc(x: [2]int)
+			where len(x) > 1,
+				  type_of(x{*}) == [2]int {
+		}
+	`,
+	}
+
+	locations := []common.Location {
+		{range = {start = {line = 1, character = 14}, end = {line = 1, character = 15}}},
+		{range = {start = {line = 2, character = 13}, end = {line = 2, character = 14}}},
+		{range = {start = {line = 3, character = 14}, end = {line = 3, character = 15}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_references_union_switch_type :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: union {
+			int,
+			string
+		}
+
+		main :: proc() {
+			foo: Foo
+			#partial switch v{*} in foo {
+			case int:
+				bar := v + 1
+			case string:
+				bar := "test" + v
+			}
+		}
+	`,
+	}
+
+	locations := []common.Location {
+		{range = {start = {line = 8, character = 19}, end = {line = 8, character = 20}}},
+		{range = {start = {line = 10, character = 11}, end = {line = 10, character = 12}}},
+		{range = {start = {line = 12, character = 20}, end = {line = 12, character = 21}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_references_enum_struct_field_without_name :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: enum {
+			A,
+			B,
+		}
+
+		Bar :: struct {
+			foo: Foo,
+		}
+
+		main :: proc() {
+			bar: Bar = {.A{*}}
+		}
+	`,
+	}
+	locations := []common.Location {
+		{range = {start = {line = 2, character = 3}, end = {line = 2, character = 4}}},
+		{range = {start = {line = 11, character = 16}, end = {line = 11, character = 17}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_references_poly_type :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		foo :: proc(array: $A/[dynamic]^$T) {
+			for e{*}lem, i in array {
+				elem
+			}
+		}
+	`,
+	}
+	locations := []common.Location {
+		{range = {start = {line = 2, character = 7}, end = {line = 2, character = 11}}},
+		{range = {start = {line = 3, character = 4}, end = {line = 3, character = 8}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_references_soa_field :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: struct {
+			x, y: int,
+		}
+
+		main :: proc() {
+			foos: #soa[]Foo
+			x := foos.x{*}
+		}
+	`,
+	}
+	locations := []common.Location {
+		{range = {start = {line = 2, character = 3}, end = {line = 2, character = 4}}},
+		{range = {start = {line = 7, character = 13}, end = {line = 7, character = 14}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_references_soa_pointer_field :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: struct {
+			x, y: int,
+		}
+
+		main :: proc() {
+			foos: #soa^#soa[]Foo
+			x := foos.x{*}
+		}
+	`,
+	}
+	locations := []common.Location {
+		{range = {start = {line = 2, character = 3}, end = {line = 2, character = 4}}},
+		{range = {start = {line = 7, character = 13}, end = {line = 7, character = 14}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_references_nested_switch_cases :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: enum {
+			A,
+			B{*},
+		}
+
+		Bar :: enum {
+			C,
+			D,
+		}
+
+		main :: proc() {
+			foo: Foo
+			bar: Bar
+
+			switch foo {
+			case .A:
+				#partial switch bar {
+				case .D:
+				}
+			case .B:
+			}
+		}
+	`,
+	}
+	locations := []common.Location {
+		{range = {start = {line = 3, character = 3}, end = {line = 3, character = 4}}},
+		{range = {start = {line = 20, character = 9}, end = {line = 20, character = 10}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_references_switch_cases_binary_expr :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: enum {
+			A,
+			B{*},
+		}
+
+		Bar :: enum {
+			C,
+			D,
+		}
+
+		main :: proc() {
+			foo: Foo
+			bar: Bar
+
+			switch foo {
+			case .A:
+				if bar == .C {}
+			case .B:
+			}
+		}
+	`,
+	}
+	locations := []common.Location {
+		{range = {start = {line = 3, character = 3}, end = {line = 3, character = 4}}},
+		{range = {start = {line = 18, character = 9}, end = {line = 18, character = 10}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_reference_struct_field_matrix_row :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+
+		Foo :: int
+
+		Bar :: struct {}
+
+		Bazz :: struct {
+			bars: matrix[Fo{*}o, 2]Bar
+		}
+
+		`,
+	}
+
+	locations := []common.Location {
+		{range = {start = {line = 2, character = 2}, end = {line = 2, character = 5}}},
+		{range = {start = {line = 7, character = 16}, end = {line = 7, character = 19}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_reference_struct_field_bitfield_backing_type :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+
+		Foo :: int
+
+		Bar :: struct {}
+
+		Bazz :: struct {
+			bars: bit_field Fo{*}o {
+			}
+		}
+
+		`,
+	}
+
+	locations := []common.Location {
+		{range = {start = {line = 2, character = 2}, end = {line = 2, character = 5}}},
+		{range = {start = {line = 7, character = 19}, end = {line = 7, character = 22}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_references_comp_lit_map_key :: proc(t: ^testing.T) {
+	source := test.Source {
+		main     = `package test
+		Foo :: struct {
+			a{*}: int,
+		}
+
+		Bar :: struct {
+			b: int,
+		}
+
+		main :: proc() {
+			m: map[Foo]Bar
+			m[{a = 1}] = {b = 2}
+		}
+		`,
+	}
+	locations := []common.Location {
+		{range = {start = {line = 2, character = 3}, end = {line = 2, character = 4}}},
+		{range = {start = {line = 11, character = 6}, end = {line = 11, character = 7}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_references_comp_lit_map_value :: proc(t: ^testing.T) {
+	source := test.Source {
+		main     = `package test
+		Foo :: struct {
+			a: int,
+		}
+
+		Bar :: struct {
+			b{*}: int,
+		}
+
+		main :: proc() {
+			m: map[Foo]Bar
+			m[{a = 1}] = {b = 2}
+		}
+		`,
+	}
+	locations := []common.Location {
+		{range = {start = {line = 6, character = 3}, end = {line = 6, character = 4}}},
+		{range = {start = {line = 11, character = 17}, end = {line = 11, character = 18}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_references_nested_using_struct_field :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: struct {
+			a: int,
+			using _: struct {
+				b: u8,
+			}
+		}
+
+		main :: proc() {
+			foo: Foo
+			b := foo.b{*}
+		}
+	`,
+	}
+	locations := []common.Location {
+		{range = {start = {line = 4, character = 4}, end = {line = 4, character = 5}}},
+		{range = {start = {line = 10, character = 12}, end = {line = 10, character = 13}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_references_nested_using_bit_field_field :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: struct {
+			a: int,
+			using _: bit_field u8 {
+				b: u8 | 4
+			}
+		}
+
+		main :: proc() {
+			foo: Foo
+			b := foo.b{*}
+		}
+	`,
+	}
+	locations := []common.Location {
+		{range = {start = {line = 4, character = 4}, end = {line = 4, character = 5}}},
+		{range = {start = {line = 10, character = 12}, end = {line = 10, character = 13}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}
+
+@(test)
+ast_references_nested_using_bit_field_field_from_declaration :: proc(t: ^testing.T) {
+	source := test.Source {
+		main = `package test
+		Foo :: struct {
+			a: int,
+			using _: bit_field u8 {
+				b{*}: u8 | 4
+			}
+		}
+
+		main :: proc() {
+			foo: Foo
+			b := foo.b
+		}
+	`,
+	}
+	locations := []common.Location {
+		{range = {start = {line = 4, character = 4}, end = {line = 4, character = 5}}},
+		{range = {start = {line = 10, character = 12}, end = {line = 10, character = 13}}},
+	}
+
+	test.expect_reference_locations(t, &source, locations[:])
+}

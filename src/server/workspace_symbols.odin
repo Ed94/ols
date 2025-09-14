@@ -1,15 +1,23 @@
 package server
 
-
 import "core:fmt"
 import "core:log"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
+import "core:time"
 
 import "src:common"
 
 dir_blacklist :: []string{"node_modules", ".git"}
+
+WorkspaceCache :: struct {
+	time:      time.Time,
+	pkgs:      [dynamic]string,
+}
+
+@(thread_local, private = "file")
+cache: WorkspaceCache
 
 @(private)
 walk_dir :: proc(info: os.File_Info, in_err: os.Errno, user_data: rawptr) -> (err: os.Error, skip_dir: bool) {
@@ -100,64 +108,73 @@ WalkData :: struct {
 
 // Modified get_workspace_symbols with better tracking
 get_workspace_symbols :: proc(query: string) -> (workspace_symbols: []WorkspaceSymbol, ok: bool) {
-	workspace := common.config.workspace_folders[0]
-	uri       := common.parse_uri(workspace.uri, context.temp_allocator) or_return
-	pkgs      := make([dynamic]string, 0, context.temp_allocator)
-	monolithic_roots := make([dynamic]string, 0, context.temp_allocator)
-	symbols   := make([dynamic]WorkspaceSymbol, 0, 100, context.temp_allocator)
-	
-	walk_data := WalkData{
-		packages = & pkgs,
-		monolithic_roots = &monolithic_roots,
+	if time.since(cache.time) > 20 * time.Second {
+		for pkg in cache.pkgs {
+			delete(pkg)
+		}
+		clear(&cache.pkgs)
+		for workspace in common.config.workspace_folders {
+			uri := common.parse_uri(workspace.uri, context.temp_allocator) or_return
+			monolithic_roots := make([dynamic]string, 0, context.temp_allocator)
+			pkgs := make([dynamic]string, 0, context.temp_allocator)
+
+			walk_data := WalkData{
+				packages = & pkgs,
+				monolithic_roots = & monolithic_roots,
+			}
+			filepath.walk(uri.path, walk_dir, &pkgs)
+
+
+			all_symbol_paths := make([dynamic]string, 0, len(pkgs) + len(monolithic_roots))
+			append_elems(&all_symbol_paths, ..pkgs[:])
+			append_elems(&all_symbol_paths, ..monolithic_roots[:])
+
+			// Process packages for symbols (existing logic)
+			_pkg: for path in all_symbol_paths {
+				log.errorf("get_workspace_symbols %v ", path)
+				matches, err := filepath.glob(fmt.tprintf("%v/*.odin", path), context.temp_allocator)
+				if len(matches) == 0 {
+					continue
+				}
+
+				for exclude_path in common.config.profile.exclude_path {
+					exclude_forward, _ := filepath.to_slash(exclude_path, context.temp_allocator)
+
+					if exclude_forward[len(exclude_forward) - 2:] == "**" {
+						lower_pkg := strings.to_lower(path)
+						lower_exclude := strings.to_lower(exclude_forward[:len(exclude_forward) - 3])
+						if strings.contains(lower_pkg, lower_exclude) {
+							continue _pkg
+						}
+					} else {
+						lower_pkg := strings.to_lower(path)
+						lower_exclude := strings.to_lower(exclude_forward)
+						if lower_pkg == lower_exclude {
+							continue _pkg
+						}
+					}
+				}
+
+				try_build_package(path)
+				append(&cache.pkgs, strings.clone(path, context.allocator))
+			}
+		}
+		cache.time = time.now()
 	}
 
-	filepath.walk(uri.path, walk_dir, &walk_data)
+	limit :: 100
+	symbols := make([dynamic]WorkspaceSymbol, 0, limit, context.temp_allocator)
+	if results, ok := fuzzy_search(query, cache.pkgs[:], "", resolve_fields = false, limit = limit); ok {
+		for result in results {
+			symbol := WorkspaceSymbol {
+				name = result.symbol.name,
+				location = {range = result.symbol.range, uri = result.symbol.uri},
+				kind = symbol_kind_to_type(result.symbol.type),
+			}
 
-	all_symbol_paths := make([dynamic]string, 0, len(pkgs) + len(monolithic_roots))
-	append_elems(&all_symbol_paths, ..pkgs[:])
-	append_elems(&all_symbol_paths, ..monolithic_roots[:])
+			append(&symbols, symbol)
+		}
+	}
 
-    // Process packages for symbols (existing logic)
-    _pkg: for path in all_symbol_paths {
-
-        log.errorf("get_workspace_symbols %v ", path)
-        matches, err := get_package_files(path, context.temp_allocator)
-        if len(matches) == 0 {
-            continue
-        }
-
-        // Check exclusion paths
-        for exclude_path in common.config.profile.exclude_path {
-            exclude_forward, _ := filepath.to_slash(exclude_path, context.temp_allocator)
-
-            if exclude_forward[len(exclude_forward) - 2:] == "**" {
-                lower_pkg := strings.to_lower(path)
-                lower_exclude := strings.to_lower(exclude_forward[:len(exclude_forward) - 3])
-                if strings.contains(lower_pkg, lower_exclude) {
-                    continue _pkg
-                }
-            } else {
-                lower_pkg := strings.to_lower(path)
-                lower_exclude := strings.to_lower(exclude_forward)
-                if lower_pkg == lower_exclude {
-                    continue _pkg
-                }
-            }
-        }
-
-        try_build_package_debug(path)
-
-        if results, ok := fuzzy_search(query, {path}); ok {
-            for result in results {
-                symbol := WorkspaceSymbol {
-                    name = result.symbol.name,
-                    location = {range = result.symbol.range, uri = result.symbol.uri},
-                    kind = symbol_kind_to_type(result.symbol.type),
-                }
-                append(&symbols, symbol)
-            }
-        }
-    }
-    
     return symbols[:], true
 }
