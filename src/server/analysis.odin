@@ -2595,7 +2595,7 @@ resolve_location_identifier :: proc(ast_context: ^AstContext, node: ast.Ident) -
 
   // Fallback: Search all packages/paths in the entire workspace as a last resort.
   for pkg_name, _ in indexer.index.collection.packages {
-  	if symbol, ok := lookup(node.name, pkg_name); 
+  	if symbol, ok := lookup(node.name, pkg_name, node.pos.file); 
 		ok {
   		return symbol, ok
     }
